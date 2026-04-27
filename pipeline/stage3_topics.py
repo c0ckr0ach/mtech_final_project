@@ -135,10 +135,10 @@ def topic_stage(anomalies_path: str = ANOMALIES_PARQUET,
     # ── Prepare corpus ────────────────────────────────────────────────────────
     print("🧹  Cleaning log text …")
     corpus_raw = (
-        df["message"].fillna("") + " " +
-        df["image_base"].fillna("") + " " +
-        df["target_image_base"].fillna("") + " " +
-        df["target_object"].fillna("").apply(lambda x: x.split("\\")[-1].lower())
+        df.get("message", pd.Series(dtype=str)).fillna("") + " " +
+        df.get("image_base", pd.Series(dtype=str)).fillna("") + " " +
+        df.get("target_image_base", pd.Series(dtype=str)).fillna("") + " " +
+        df.get("target_object", pd.Series(dtype=str)).fillna("").apply(lambda x: x.split("\\")[-1].lower() if isinstance(x, str) else "")
     )
     docs = corpus_raw.apply(clean_log_text).tolist()
     print(f"    Corpus size: {len(docs):,} documents")
