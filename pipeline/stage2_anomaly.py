@@ -59,7 +59,7 @@ def run_isolation_forest(df: pd.DataFrame, X_scaled: np.ndarray,
 
 
 def run_umap(X_scaled: np.ndarray, df: pd.DataFrame,
-             sample_size: int = UMAP_SAMPLE) -> px.Figure:
+             sample_size: int = UMAP_SAMPLE) -> "go.Figure":
     """UMAP 2-D projection of a random sample, coloured by anomaly score."""
     n = min(sample_size, len(df))
     idx = np.random.default_rng(RANDOM_STATE).choice(len(df), n, replace=False)
