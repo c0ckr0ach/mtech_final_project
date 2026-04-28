@@ -191,7 +191,7 @@ def topic_stage(anomalies_path: str = ANOMALIES_PARQUET,
 
     # ── Save ──────────────────────────────────────────────────────────────────
     df.to_parquet(topics_path, index=False)
-    topic_model.save(model_dir)
+    topic_model.save(os.path.join(model_dir, "model.pkl"))
     print(f"\n💾  Saved annotated parquet → {topics_path}")
     print(f"💾  Saved BERTopic model    → {model_dir}")
 
