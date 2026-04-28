@@ -134,11 +134,18 @@ def topic_stage(anomalies_path: str = ANOMALIES_PARQUET,
 
     # ── Prepare corpus ────────────────────────────────────────────────────────
     print("🧹  Cleaning log text …")
+
+    def _col(name: str) -> pd.Series:
+        """Safely retrieve a column; return empty strings if absent."""
+        return df[name].fillna("") if name in df.columns else pd.Series("", index=df.index)
+
     corpus_raw = (
-        df.get("message", pd.Series(dtype=str)).fillna("") + " " +
-        df.get("image_base", pd.Series(dtype=str)).fillna("") + " " +
-        df.get("target_image_base", pd.Series(dtype=str)).fillna("") + " " +
-        df.get("target_object", pd.Series(dtype=str)).fillna("").apply(lambda x: x.split("\\")[-1].lower() if isinstance(x, str) else "")
+        _col("message") + " " +
+        _col("image_base") + " " +
+        _col("target_image_base") + " " +
+        _col("target_object").apply(
+            lambda x: x.split("\\")[-1].lower() if isinstance(x, str) and x else ""
+        )
     )
     docs = corpus_raw.apply(clean_log_text).tolist()
     print(f"    Corpus size: {len(docs):,} documents")

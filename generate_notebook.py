@@ -193,13 +193,113 @@ Runs BERTopic on the anomalous event corpus:
 """))
 
 cells.append(code("""\
-from pipeline.stage3_topics import topic_stage
+import os, re, nltk, numpy as np, pandas as pd
+from tqdm.auto import tqdm
+from bertopic import BERTopic
+from sentence_transformers import SentenceTransformer
+from umap import UMAP
+from hdbscan import HDBSCAN
+from sklearn.feature_extraction.text import CountVectorizer
 
-topics_df, topic_model = topic_stage(
-    anomalies_path = ANOMALIES_PARQUET,
-    topics_path    = TOPICS_PARQUET,
-    model_dir      = TOPIC_MODEL_DIR,
+# ── Text cleaning helpers ────────────────────────────────────────────────────
+_GUID_RE = re.compile(r"\\{[0-9a-fA-F\\-]{8,}\\}")
+_HEX_RE  = re.compile(r"\\b0x[0-9a-fA-F]+\\b")
+_TS_RE   = re.compile(r"\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?")
+_PATH_RE = re.compile(r"[A-Za-z]:\\\\\\\\(?:[^\\s\\r\\n|,\\\\\\\\]+\\\\\\\\)*([^\\s\\r\\n|,\\\\\\\\]+)")
+_NUM_RE  = re.compile(r"\\b\\d+\\b")
+_WS_RE   = re.compile(r"\\s+")
+
+try:
+    from nltk.corpus import stopwords as _sw
+    _STOP = set(_sw.words("english"))
+except LookupError:
+    nltk.download("stopwords", quiet=True)
+    from nltk.corpus import stopwords as _sw
+    _STOP = set(_sw.words("english"))
+
+_DOMAIN_NOISE = {
+    "rulename", "utctime", "processguid", "processid", "image",
+    "targetprocessid", "targetprocessguid", "sourcename", "channel",
+    "keywords", "opcodevalue", "severityvalue", "eventreceivedtime",
+    "sourcemodulename", "sourcemoduletype", "task", "threadid",
+    "recordnumber", "executionprocessid", "providerguid",
+    "timestamp", "version", "none", "null", "true", "false",
+}
+
+def _clean(text):
+    text = _PATH_RE.sub(lambda m: " " + m.group(1).lower() + " ", text)
+    text = _GUID_RE.sub(" ", text)
+    text = _HEX_RE.sub(" hexval ", text)
+    text = _TS_RE.sub(" ", text)
+    text = _NUM_RE.sub(" ", text)
+    text = re.sub(r"[^a-zA-Z\\s]", " ", text)
+    text = _WS_RE.sub(" ", text).strip().lower()
+    tokens = [w for w in text.split()
+              if w not in _STOP and w not in _DOMAIN_NOISE and len(w) > 2]
+    return " ".join(tokens) if tokens else "unknown_event"
+
+def _col(df, name):
+    '''Safe column accessor - returns empty strings if column is absent.'''
+    return df[name].fillna("") if name in df.columns else pd.Series("", index=df.index)
+
+# ── BERTopic pipeline ────────────────────────────────────────────────────────
+os.makedirs(os.path.dirname(TOPICS_PARQUET),   exist_ok=True)
+os.makedirs(TOPIC_MODEL_DIR, exist_ok=True)
+
+print("📥  Loading anomalies …")
+df_a = pd.read_parquet(ANOMALIES_PARQUET)
+print(f"    Shape: {df_a.shape}")
+print(f"    Columns: {list(df_a.columns)}")
+
+print("🧹  Cleaning log text …")
+corpus_raw = (
+    _col(df_a, "message") + " " +
+    _col(df_a, "image_base") + " " +
+    _col(df_a, "target_image_base") + " " +
+    _col(df_a, "target_object").apply(
+        lambda x: x.split("\\\\")[-1].lower() if isinstance(x, str) and x else ""
+    )
 )
+docs = corpus_raw.apply(_clean).tolist()
+print(f"    Corpus size: {len(docs):,}")
+print(f"    Sample    : {docs[0][:120]}")
+
+umap_m = UMAP(n_neighbors=15, n_components=5, min_dist=0.0,
+              metric="cosine", random_state=42, low_memory=True)
+hdbscan_m = HDBSCAN(min_cluster_size=15, metric="euclidean",
+                    cluster_selection_method="eom", prediction_data=True)
+vectorizer_m = CountVectorizer(stop_words="english", min_df=2,
+                               ngram_range=(1, 2), max_features=10_000)
+topic_model = BERTopic(
+    embedding_model=SentenceTransformer("all-MiniLM-L6-v2"),
+    umap_model=umap_m, hdbscan_model=hdbscan_m, vectorizer_model=vectorizer_m,
+    top_n_words=10, calculate_probabilities=True, verbose=True,
+)
+
+print("\\n🔬  Fitting BERTopic …")
+topics, probs = topic_model.fit_transform(docs)
+
+df_a = df_a.copy()
+df_a["topic"]      = topics
+df_a["topic_prob"] = [float(p.max()) if hasattr(p, "max") else float(p) for p in probs]
+
+n_topics = len(set(topics)) - (1 if -1 in topics else 0)
+print(f"\\n✅  Discovered {n_topics} topics  (topic -1 = noise/outliers)")
+print(topic_model.get_topic_info().head(12).to_string(index=False))
+
+# Visualisations
+fig_bar = topic_model.visualize_barchart(top_n_topics=min(12, n_topics), n_words=8)
+fig_bar.update_layout(template="plotly_dark", title="📊 Security Event Topics — Top Keywords")
+fig_bar.show()
+if n_topics >= 2:
+    topic_model.visualize_topics().show()
+    topic_model.visualize_heatmap().show()
+
+df_a.to_parquet(TOPICS_PARQUET, index=False)
+topic_model.save(TOPIC_MODEL_DIR, serialization="safetensors",
+                 save_ctfidf=True, save_embedding_model="all-MiniLM-L6-v2")
+print(f"\\n💾  Saved → {TOPICS_PARQUET}")
+topics_df    = df_a
 """))
 
 cells.append(code("""\
