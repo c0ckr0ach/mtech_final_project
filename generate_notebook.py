@@ -290,6 +290,24 @@ print(test_ctx[:800])
 
 # ── STAGE 4b ─────────────────────────────────────────────────────────────────
 cells.append(md("""---
+
+"""))
+
+cells.append(code("""\
+# Install Ollama
+!curl -fsSL https://ollama.com/install.sh | sh
+
+# Start the server in the background
+import subprocess
+import time
+subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+time.sleep(4)
+
+# Pull the model (you will see the progress bar here!)
+!ollama pull llama3
+"""))
+
+cells.append(md("""---
 ## 🤖 Stage 4b — LLM Threat Analysis (DSPy + Ollama + RAG)
 
 ### What happens per anomalous event:

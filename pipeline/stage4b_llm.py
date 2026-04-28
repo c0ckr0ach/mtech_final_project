@@ -27,25 +27,6 @@ RAG_TOP_K       = 5
 
 # ── Ollama bootstrap ──────────────────────────────────────────────────────────
 
-def start_ollama(model: str = OLLAMA_MODEL):
-    """Install Ollama (Colab), start the server, pull the model."""
-    # Install (idempotent on Colab)
-    os.system("curl -fsSL https://ollama.com/install.sh | sh")
-
-    # Start server in background using shell=True so the shell resolves the path
-    subprocess.Popen(
-        "ollama serve",
-        shell=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    time.sleep(4)          # wait for server to bind
-    
-    # Pull model (no-op if already cached)
-    subprocess.run(f"ollama pull {model}", shell=True, check=True)
-    print(f"✅  Ollama serving model: {model}")
-
-
 def configure_dspy(model: str = OLLAMA_MODEL):
     """Wire DSPy to the local Ollama endpoint."""
     lm = dspy.LM(
@@ -232,7 +213,6 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
     Returns list of result dicts, also saved to JSON.
     """
     # ── Setup ─────────────────────────────────────────────────────────────────
-    start_ollama(OLLAMA_MODEL)
     configure_dspy(OLLAMA_MODEL)
 
     client   = _get_client()
