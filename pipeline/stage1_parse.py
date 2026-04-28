@@ -136,7 +136,7 @@ def parse_stage(data_path: str = DATA_PATH,
         df[f"eid_{eid}"] = (df["event_id"] == eid).astype(np.int8)
 
     # Channel bucket
-    df["channel_bucket"] = df["channel"].str.extract(r"Sysmon|Security|System|Application",
+    df["channel_bucket"] = df["channel"].str.extract(r"(Sysmon|Security|System|Application)",
                                                        expand=False).fillna("Other")
 
     df.to_parquet(out_path, index=False)
