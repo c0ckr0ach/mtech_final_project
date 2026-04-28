@@ -4,6 +4,8 @@ Assembles main.ipynb from the four pipeline stage modules.
 Run: python generate_notebook.py
 """
 import nbformat as nbf
+import os
+import re
 
 nb = nbf.v4.new_notebook()
 nb.metadata = {
@@ -15,6 +17,15 @@ nb.metadata = {
 def md(src):   return nbf.v4.new_markdown_cell(src)
 def code(src): return nbf.v4.new_code_cell(src)
 
+def read_pipeline_module(module_name):
+    """Read a pipeline python file, strip the __main__ block, and return as a string."""
+    filepath = os.path.join("pipeline", module_name)
+    with open(filepath, "r", encoding="utf-8") as f:
+        content = f.read()
+    # Strip the __main__ block
+    content = re.split(r'^if __name__ == "__main__":', content, flags=re.MULTILINE)[0]
+    return content.strip()
+
 # ─────────────────────────────────────────────────────────────────────────────
 cells = []
 
@@ -24,7 +35,7 @@ cells.append(md("""# 🛡️ Security Log Analysis Pipeline
 **Pipeline**: Parse → Anomaly Detection → BERTopic → RAG + LLM (DSPy + Ollama)
 
 > ⚡ **Runtime**: Set Colab to **GPU** (T4 or A100) before running.  
-> 📥 **Dataset**: Automatically downloaded from OTRF/Security-Datasets in the setup step below.
+> 📁 **Dataset**: Automatically fetched from the Git repository and extracted to `/content/data_path`.
 
 ---
 """))
@@ -50,106 +61,52 @@ nltk.download('stopwords', quiet=True)
 print("✅ All dependencies installed")
 """))
 
-cells.append(md("### Clone pipeline modules from repo"))
+cells.append(md("### Fetch and Extract Dataset"))
 
 cells.append(code("""\
-import os, sys
+import os
+import zipfile
+import glob
 
-# If running from Google Drive, mount it
-# from google.colab import drive
-# drive.mount('/content/drive')
+# URL to the dataset in your GitHub repo (e.g., a .zip file containing the JSON)
+# Replace this with the actual URL to your dataset zip file
+DATA_REPO_URL = "https://raw.githubusercontent.com/OTRF/Security-Datasets/master/datasets/compound/apt29/day1/apt29_evals_day1_manual.zip"
+ZIP_PATH = "/content/apt29_evals_day1_manual.zip"
+EXTRACT_DIR = "/content/data_path"
 
-# Clone the pipeline repo
-REPO_URL = "https://github.com/c0ckr0ach/mtech_final_project.git"
+if not os.path.exists(EXTRACT_DIR):
+    os.makedirs(EXTRACT_DIR, exist_ok=True)
 
-if not os.path.exists("/content/mtech_final_project"):
-    !git clone {REPO_URL} /content/mtech_final_project
+if not os.path.exists(ZIP_PATH):
+    print(f"⬇️ Downloading dataset from {DATA_REPO_URL}...")
+    !wget -q {DATA_REPO_URL} -O {ZIP_PATH}
+    
+if os.path.exists(ZIP_PATH):
+    if not zipfile.is_zipfile(ZIP_PATH):
+        raise ValueError(f"❌ The downloaded file is not a valid zip file! Did you forget to update the placeholder DATA_REPO_URL?\\nCurrent URL: {DATA_REPO_URL}")
+    print("📦 Extracting dataset...")
+    with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+        zip_ref.extractall(EXTRACT_DIR)
+
+# Dynamically find the extracted JSON file to use in the pipeline
+json_files = glob.glob(f"{EXTRACT_DIR}/**/*.json", recursive=True)
+if json_files:
+    DATA_PATH = json_files[0]
+    print(f"✅ Found dataset: {DATA_PATH}")
 else:
-    print("📁 Repo already cloned, pulling latest…")
-    !git -C /content/mtech_final_project pull --ff-only
-
-sys.path.insert(0, "/content/mtech_final_project")
-print("✅ Pipeline modules on path")
-"""))
-
-cells.append(md("### Download & extract the APT29 evaluation dataset"))
-
-cells.append(code("""\
-import os, glob, zipfile, requests
-from tqdm.auto import tqdm
-
-# ── Dataset source (OTRF / Security-Datasets, ~14 MB zip) ────────────────────
-DATASET_ZIP_URL = (
-    "https://raw.githubusercontent.com/OTRF/Security-Datasets/master"
-    "/datasets/compound/apt29/day1/apt29_evals_day1_manual.zip"
-)
-ZIP_DEST   = "/content/apt29_evals_day1_manual.zip"
-EXTRACT_TO = "/content/"
-
-# Download only if the zip is not already present
-if not os.path.exists(ZIP_DEST):
-    print(f"📥  Downloading dataset from OTRF/Security-Datasets …")
-    resp = requests.get(DATASET_ZIP_URL, stream=True, timeout=120)
-    resp.raise_for_status()
-    total = int(resp.headers.get("content-length", 0))
-    with open(ZIP_DEST, "wb") as fh, tqdm(
-        total=total, unit="B", unit_scale=True, desc="apt29_manual.zip"
-    ) as bar:
-        for chunk in resp.iter_content(chunk_size=1 << 20):
-            fh.write(chunk)
-            bar.update(len(chunk))
-    print("✅  Download complete")
-else:
-    print(f"📁  Zip already present: {ZIP_DEST}")
-
-# Extract only if the JSON is not already present in /content/
-existing = glob.glob("/content/apt29_evals_day1_manual*.json")
-if not existing:
-    print("📦  Extracting archive …")
-    with zipfile.ZipFile(ZIP_DEST, "r") as zf:
-        # Extract everything flat into /content/
-        for member in zf.infolist():
-            member.filename = os.path.basename(member.filename)
-            if member.filename:   # skip directory entries
-                zf.extract(member, EXTRACT_TO)
-    existing = glob.glob("/content/apt29_evals_day1_manual*.json")
-    print(f"✅  Extracted: {existing}")
-else:
-    print(f"📁  JSON already extracted: {existing}")
-
-if not existing:
-    raise FileNotFoundError(
-        "Could not find apt29_evals_day1_manual*.json in /content/ after extraction. "
-        "Check the zip contents with: zipfile.ZipFile(ZIP_DEST).namelist()"
-    )
-
-# Expose the path globally so the config cell can reference it
-DATASET_JSON_PATH = sorted(existing)[0]
-print(f"\\n📄  Dataset path : {DATASET_JSON_PATH}")
+    # Fallback to the default expected path
+    DATA_PATH = f"{EXTRACT_DIR}/apt29_evals_day1_manual_2020-05-01225525.json"
+    print(f"⚠️ No JSON found dynamically, falling back to: {DATA_PATH}")
 """))
 
 cells.append(md("### Global configuration"))
 
 cells.append(code("""\
-import os, glob
+# ─── EDIT THESE PATHS IF NEEDED ───────────────────────────────────────────
+# DATA_PATH is set dynamically above, but we keep a fallback just in case
+if 'DATA_PATH' not in locals():
+    DATA_PATH = "/content/data_path/apt29_evals_day1_manual_2020-05-01225525.json"
 
-# ── Dataset path (resolved from the download step above) ──────────────────
-# DATASET_JSON_PATH is set by the download cell; fall back to glob if this
-# cell is re-run in isolation.
-try:
-    DATA_PATH = DATASET_JSON_PATH
-except NameError:
-    _candidates = sorted(glob.glob("/content/apt29_evals_day1_manual*.json"))
-    if not _candidates:
-        raise FileNotFoundError(
-            "No apt29_evals_day1_manual*.json found in /content/.\n"
-            "Please run the 'Download & extract' cell above first."
-        )
-    DATA_PATH = _candidates[0]
-
-print(f"📄  DATA_PATH → {DATA_PATH}")
-
-# ── Output paths (all under /content/data/) ───────────────────────────────
 NORMALIZED_PARQUET = "/content/data/normalized.parquet"
 ANOMALIES_PARQUET  = "/content/data/anomalies.parquet"
 TOPICS_PARQUET     = "/content/data/anomalies_with_topics.parquet"
@@ -162,6 +119,7 @@ CONTAMINATION      = 0.05           # fraction flagged as anomalous
 TOP_N_TOPICS       = 12             # topics passed to LLM
 EVENTS_PER_TOPIC   = 3              # worst anomalies per topic
 
+import os
 os.makedirs("/content/data", exist_ok=True)
 print("✅ Config ready")
 """))
@@ -185,9 +143,9 @@ event into a flat schema, engineers ML features, and saves `normalized.parquet`.
 | `eid_*` | One-hot top-15 EventIDs |
 """))
 
-cells.append(code("""\
-from pipeline.stage1_parse import parse_stage
+cells.append(code(read_pipeline_module("stage1_parse.py")))
 
+cells.append(code("""\
 df_norm = parse_stage(
     data_path  = DATA_PATH,
     out_path   = NORMALIZED_PARQUET,
@@ -228,9 +186,9 @@ Events in the bottom `CONTAMINATION` percentile are flagged as anomalous.
 A UMAP 2-D projection is rendered as an interactive scatter plot.
 """))
 
-cells.append(code("""\
-from pipeline.stage2_anomaly import anomaly_stage
+cells.append(code(read_pipeline_module("stage2_anomaly.py")))
 
+cells.append(code("""\
 anomalies_df = anomaly_stage(
     normalized_path = NORMALIZED_PARQUET,
     anomalies_path  = ANOMALIES_PARQUET,
@@ -267,119 +225,17 @@ Runs BERTopic on the anomalous event corpus:
 5. **Visualise** — bar chart, inter-topic map, heatmap
 """))
 
+cells.append(code(read_pipeline_module("stage3_topics.py")))
+
 cells.append(code("""\
-import os, re, nltk, numpy as np, pandas as pd
-from tqdm.auto import tqdm
-from bertopic import BERTopic
-from sentence_transformers import SentenceTransformer
-from umap import UMAP
-from hdbscan import HDBSCAN
-from sklearn.feature_extraction.text import CountVectorizer
-
-# ── Text cleaning helpers ────────────────────────────────────────────────────
-_GUID_RE = re.compile(r"\\{[0-9a-fA-F\\-]{8,}\\}")
-_HEX_RE  = re.compile(r"\\b0x[0-9a-fA-F]+\\b")
-_TS_RE   = re.compile(r"\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?")
-_PATH_RE = re.compile(r"[A-Za-z]:\\\\\\\\(?:[^\\s\\r\\n|,\\\\\\\\]+\\\\\\\\)*([^\\s\\r\\n|,\\\\\\\\]+)")
-_NUM_RE  = re.compile(r"\\b\\d+\\b")
-_WS_RE   = re.compile(r"\\s+")
-
-try:
-    from nltk.corpus import stopwords as _sw
-    _STOP = set(_sw.words("english"))
-except LookupError:
-    nltk.download("stopwords", quiet=True)
-    from nltk.corpus import stopwords as _sw
-    _STOP = set(_sw.words("english"))
-
-_DOMAIN_NOISE = {
-    "rulename", "utctime", "processguid", "processid", "image",
-    "targetprocessid", "targetprocessguid", "sourcename", "channel",
-    "keywords", "opcodevalue", "severityvalue", "eventreceivedtime",
-    "sourcemodulename", "sourcemoduletype", "task", "threadid",
-    "recordnumber", "executionprocessid", "providerguid",
-    "timestamp", "version", "none", "null", "true", "false",
-}
-
-def _clean(text):
-    text = _PATH_RE.sub(lambda m: " " + m.group(1).lower() + " ", text)
-    text = _GUID_RE.sub(" ", text)
-    text = _HEX_RE.sub(" hexval ", text)
-    text = _TS_RE.sub(" ", text)
-    text = _NUM_RE.sub(" ", text)
-    text = re.sub(r"[^a-zA-Z\\s]", " ", text)
-    text = _WS_RE.sub(" ", text).strip().lower()
-    tokens = [w for w in text.split()
-              if w not in _STOP and w not in _DOMAIN_NOISE and len(w) > 2]
-    return " ".join(tokens) if tokens else "unknown_event"
-
-def _col(df, name):
-    '''Safe column accessor - returns empty strings if column is absent.'''
-    return df[name].fillna("") if name in df.columns else pd.Series("", index=df.index)
-
-# ── BERTopic pipeline ────────────────────────────────────────────────────────
-os.makedirs(os.path.dirname(TOPICS_PARQUET),   exist_ok=True)
-os.makedirs(TOPIC_MODEL_DIR, exist_ok=True)
-
-print("📥  Loading anomalies …")
-df_a = pd.read_parquet(ANOMALIES_PARQUET)
-print(f"    Shape: {df_a.shape}")
-print(f"    Columns: {list(df_a.columns)}")
-
-print("🧹  Cleaning log text …")
-corpus_raw = (
-    _col(df_a, "message") + " " +
-    _col(df_a, "image_base") + " " +
-    _col(df_a, "target_image_base") + " " +
-    _col(df_a, "target_object").apply(
-        lambda x: x.split("\\\\")[-1].lower() if isinstance(x, str) and x else ""
-    )
+df_a, topic_model = topic_stage(
+    anomalies_path = ANOMALIES_PARQUET,
+    topics_path    = TOPICS_PARQUET,
+    model_dir      = TOPIC_MODEL_DIR,
 )
-docs = corpus_raw.apply(_clean).tolist()
-print(f"    Corpus size: {len(docs):,}")
-print(f"    Sample    : {docs[0][:120]}")
-
-umap_m = UMAP(n_neighbors=15, n_components=5, min_dist=0.0,
-              metric="cosine", random_state=42, low_memory=True)
-hdbscan_m = HDBSCAN(min_cluster_size=15, metric="euclidean",
-                    cluster_selection_method="eom", prediction_data=True)
-vectorizer_m = CountVectorizer(stop_words="english", min_df=2,
-                               ngram_range=(1, 2), max_features=10_000)
-topic_model = BERTopic(
-    embedding_model=SentenceTransformer("all-MiniLM-L6-v2"),
-    umap_model=umap_m, hdbscan_model=hdbscan_m, vectorizer_model=vectorizer_m,
-    top_n_words=10, calculate_probabilities=True, verbose=True,
-)
-
-print("\\n🔬  Fitting BERTopic …")
-topics, probs = topic_model.fit_transform(docs)
-
-df_a = df_a.copy()
-df_a["topic"]      = topics
-df_a["topic_prob"] = [float(p.max()) if hasattr(p, "max") else float(p) for p in probs]
-
-n_topics = len(set(topics)) - (1 if -1 in topics else 0)
-print(f"\\n✅  Discovered {n_topics} topics  (topic -1 = noise/outliers)")
-print(topic_model.get_topic_info().head(12).to_string(index=False))
-
-# Visualisations
-fig_bar = topic_model.visualize_barchart(top_n_topics=min(12, n_topics), n_words=8)
-fig_bar.update_layout(template="plotly_dark", title="📊 Security Event Topics — Top Keywords")
-fig_bar.show()
-if n_topics >= 2:
-    topic_model.visualize_topics().show()
-    topic_model.visualize_heatmap().show()
-
-df_a.to_parquet(TOPICS_PARQUET, index=False)
-topic_model.save(TOPIC_MODEL_DIR, serialization="safetensors",
-                 save_ctfidf=True, save_embedding_model="all-MiniLM-L6-v2")
-print(f"\\n💾  Saved → {TOPICS_PARQUET}")
-topics_df    = df_a
 """))
 
 cells.append(code("""\
-# Merge topic keywords into the dataframe for Stage 4
-from pipeline.stage3_topics import get_topic_summary
 import pandas as pd
 
 topics_df = pd.read_parquet(TOPICS_PARQUET)
@@ -413,16 +269,14 @@ Downloads and indexes **5 cybersecurity knowledge sources**:
 > ⏱️ This cell takes **5–15 min** (cloning Sigma is the slow part). Run once; ChromaDB persists to disk.
 """))
 
-cells.append(code("""\
-from pipeline.stage4a_rag_kb import build_knowledge_base
+cells.append(code(read_pipeline_module("stage4a_rag_kb.py")))
 
+cells.append(code("""\
 chroma_client = build_knowledge_base()
 """))
 
 cells.append(code("""\
 # Verify collections
-from pipeline.stage4a_rag_kb import _get_client, query_all_collections
-
 chroma_client = _get_client()
 print("ChromaDB collections:")
 for col in chroma_client.list_collections():
@@ -451,9 +305,9 @@ cells.append(md("""---
 > 🎯 **DSPy `BootstrapFewShot`** auto-optimises prompt selection using 2 APT29 labelled examples.
 """))
 
-cells.append(code("""\
-from pipeline.stage4b_llm import llm_analysis_stage
+cells.append(code(read_pipeline_module("stage4b_llm.py")))
 
+cells.append(code("""\
 results = llm_analysis_stage(
     topics_path   = TOPICS_PARQUET,
     results_path  = RESULTS_JSON,

@@ -10,7 +10,7 @@ from tqdm.auto import tqdm
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
-DATA_PATH         = "/content/apt29_evals_day1_manual_2020-05-01225525.json"
+DATA_PATH         = "/content/data_path/apt29_evals_day1_manual_2020-05-01225525.json"
 NORMALIZED_PARQUET = "/content/data/normalized.parquet"
 CHUNK_SIZE        = 50_000          # rows kept in memory before flushing
 # ──────────────────────────────────────────────────────────────────────────────
