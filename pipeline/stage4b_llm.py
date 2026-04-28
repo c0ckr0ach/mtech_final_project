@@ -9,7 +9,10 @@ import dspy
 import chromadb
 from IPython.display import display, Markdown
 
-from pipeline.stage4a_rag_kb import query_all_collections, _get_client, _get_embedder
+try:
+    from pipeline.stage4a_rag_kb import query_all_collections, _get_client, _get_embedder
+except ImportError:
+    pass  # In notebook mode, these functions are already in the global namespace
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TOPICS_PARQUET  = "/content/data/anomalies_with_topics.parquet"
