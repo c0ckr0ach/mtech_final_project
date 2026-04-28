@@ -191,8 +191,7 @@ def topic_stage(anomalies_path: str = ANOMALIES_PARQUET,
 
     # ── Save ──────────────────────────────────────────────────────────────────
     df.to_parquet(topics_path, index=False)
-    topic_model.save(model_dir, serialization="safetensors",
-                     save_ctfidf=True, save_embedding_model=EMBED_MODEL)
+    topic_model.save(model_dir)
     print(f"\n💾  Saved annotated parquet → {topics_path}")
     print(f"💾  Saved BERTopic model    → {model_dir}")
 
