@@ -31,22 +31,18 @@ def start_ollama(model: str = OLLAMA_MODEL):
     """Install Ollama (Colab), start the server, pull the model."""
     # Install (idempotent on Colab)
     os.system("curl -fsSL https://ollama.com/install.sh | sh")
-    
-    # Colab subprocess might not see the new PATH, so we use the absolute path
-    ollama_bin = "/usr/local/bin/ollama"
-    if not os.path.exists(ollama_bin):
-        import shutil
-        ollama_bin = shutil.which("ollama") or "ollama"
 
-    # Start server in background
+    # Start server in background using shell=True so the shell resolves the path
     subprocess.Popen(
-        [ollama_bin, "serve"],
+        "ollama serve",
+        shell=True,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
     time.sleep(4)          # wait for server to bind
+    
     # Pull model (no-op if already cached)
-    subprocess.run([ollama_bin, "pull", model], check=True)
+    subprocess.run(f"ollama pull {model}", shell=True, check=True)
     print(f"✅  Ollama serving model: {model}")
 
 
