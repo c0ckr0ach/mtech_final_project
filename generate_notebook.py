@@ -24,7 +24,7 @@ cells.append(md("""# 🛡️ Security Log Analysis Pipeline
 **Pipeline**: Parse → Anomaly Detection → BERTopic → RAG + LLM (DSPy + Ollama)
 
 > ⚡ **Runtime**: Set Colab to **GPU** (T4 or A100) before running.  
-> 📁 **Dataset**: Upload `apt29_evals_day1_manual_2020-05-01225525.json` to `/content/` before running Stage 1.
+> 📥 **Dataset**: Automatically downloaded from OTRF/Security-Datasets in the setup step below.
 
 ---
 """))
@@ -50,7 +50,7 @@ nltk.download('stopwords', quiet=True)
 print("✅ All dependencies installed")
 """))
 
-cells.append(md("### Clone pipeline modules from this repo"))
+cells.append(md("### Clone pipeline modules from repo"))
 
 cells.append(code("""\
 import os, sys
@@ -59,21 +59,97 @@ import os, sys
 # from google.colab import drive
 # drive.mount('/content/drive')
 
-# Clone the pipeline repo (adjust URL to your repo)
-REPO_URL = "https://github.com/YOUR_USERNAME/mtech_final_project.git"
+# Clone the pipeline repo
+REPO_URL = "https://github.com/c0ckr0ach/mtech_final_project.git"
 
 if not os.path.exists("/content/mtech_final_project"):
     !git clone {REPO_URL} /content/mtech_final_project
+else:
+    print("📁 Repo already cloned, pulling latest…")
+    !git -C /content/mtech_final_project pull --ff-only
 
 sys.path.insert(0, "/content/mtech_final_project")
 print("✅ Pipeline modules on path")
 """))
 
+cells.append(md("### Download & extract the APT29 evaluation dataset"))
+
+cells.append(code("""\
+import os, glob, zipfile, requests
+from tqdm.auto import tqdm
+
+# ── Dataset source (OTRF / Security-Datasets, ~14 MB zip) ────────────────────
+DATASET_ZIP_URL = (
+    "https://raw.githubusercontent.com/OTRF/Security-Datasets/master"
+    "/datasets/compound/apt29/day1/apt29_evals_day1_manual.zip"
+)
+ZIP_DEST   = "/content/apt29_evals_day1_manual.zip"
+EXTRACT_TO = "/content/"
+
+# Download only if the zip is not already present
+if not os.path.exists(ZIP_DEST):
+    print(f"📥  Downloading dataset from OTRF/Security-Datasets …")
+    resp = requests.get(DATASET_ZIP_URL, stream=True, timeout=120)
+    resp.raise_for_status()
+    total = int(resp.headers.get("content-length", 0))
+    with open(ZIP_DEST, "wb") as fh, tqdm(
+        total=total, unit="B", unit_scale=True, desc="apt29_manual.zip"
+    ) as bar:
+        for chunk in resp.iter_content(chunk_size=1 << 20):
+            fh.write(chunk)
+            bar.update(len(chunk))
+    print("✅  Download complete")
+else:
+    print(f"📁  Zip already present: {ZIP_DEST}")
+
+# Extract only if the JSON is not already present in /content/
+existing = glob.glob("/content/apt29_evals_day1_manual*.json")
+if not existing:
+    print("📦  Extracting archive …")
+    with zipfile.ZipFile(ZIP_DEST, "r") as zf:
+        # Extract everything flat into /content/
+        for member in zf.infolist():
+            member.filename = os.path.basename(member.filename)
+            if member.filename:   # skip directory entries
+                zf.extract(member, EXTRACT_TO)
+    existing = glob.glob("/content/apt29_evals_day1_manual*.json")
+    print(f"✅  Extracted: {existing}")
+else:
+    print(f"📁  JSON already extracted: {existing}")
+
+if not existing:
+    raise FileNotFoundError(
+        "Could not find apt29_evals_day1_manual*.json in /content/ after extraction. "
+        "Check the zip contents with: zipfile.ZipFile(ZIP_DEST).namelist()"
+    )
+
+# Expose the path globally so the config cell can reference it
+DATASET_JSON_PATH = sorted(existing)[0]
+print(f"\\n📄  Dataset path : {DATASET_JSON_PATH}")
+"""))
+
 cells.append(md("### Global configuration"))
 
 cells.append(code("""\
-# ─── EDIT THESE PATHS IF NEEDED ───────────────────────────────────────────
-DATA_PATH          = "/content/apt29_evals_day1_manual_2020-05-01225525.json"
+import os, glob
+
+# ── Dataset path (resolved from the download step above) ──────────────────
+# DATASET_JSON_PATH is set by the download cell; fall back to glob if this
+# cell is re-run in isolation.
+try:
+    DATA_PATH = DATASET_JSON_PATH
+except NameError:
+    _candidates = sorted(glob.glob("/content/apt29_evals_day1_manual*.json"))
+    if not _candidates:
+        raise FileNotFoundError(
+            "No apt29_evals_day1_manual*.json found in /content/.\n"
+            "Please run the 'Download & extract' cell above first."
+        )
+    DATA_PATH = _candidates[0]
+
+print(f"📄  DATA_PATH → {DATA_PATH}")
+
+# ── Output paths (all under /content/data/) ───────────────────────────────
 NORMALIZED_PARQUET = "/content/data/normalized.parquet"
 ANOMALIES_PARQUET  = "/content/data/anomalies.parquet"
 TOPICS_PARQUET     = "/content/data/anomalies_with_topics.parquet"
@@ -86,7 +162,6 @@ CONTAMINATION      = 0.05           # fraction flagged as anomalous
 TOP_N_TOPICS       = 12             # topics passed to LLM
 EVENTS_PER_TOPIC   = 3              # worst anomalies per topic
 
-import os
 os.makedirs("/content/data", exist_ok=True)
 print("✅ Config ready")
 """))
