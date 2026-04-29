@@ -295,6 +295,7 @@ cells.append(md("""---
 
 cells.append(code("""\
 # Install Ollama
+!sudo apt-get install -y zstd
 !curl -fsSL https://ollama.com/install.sh | sh
 
 # Start the server in the background
