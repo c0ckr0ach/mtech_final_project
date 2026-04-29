@@ -41,7 +41,7 @@ def build_feature_matrix(df: pd.DataFrame):
 
 def run_isolation_forest(df: pd.DataFrame, X_scaled: np.ndarray,
                           contamination: float = CONTAMINATION) -> pd.DataFrame:
-    print("🌲  Training Isolation Forest …")
+    print("Training Isolation Forest...")
     iso = IsolationForest(
         contamination=contamination,
         n_estimators=200,
@@ -54,7 +54,7 @@ def run_isolation_forest(df: pd.DataFrame, X_scaled: np.ndarray,
     df["is_anomaly"]     = (df["anomaly_label"] == -1).astype(int)
 
     n = df["is_anomaly"].sum()
-    print(f"🚨  Anomalies detected: {n:,}  ({n / len(df) * 100:.2f}%)")
+    print(f"Anomalies detected: {n:,}  ({n / len(df) * 100:.2f}%)")
     return df
 
 
@@ -64,7 +64,7 @@ def run_umap(X_scaled: np.ndarray, df: pd.DataFrame,
     n = min(sample_size, len(df))
     idx = np.random.default_rng(RANDOM_STATE).choice(len(df), n, replace=False)
 
-    print(f"📐  UMAP on {n:,} samples …")
+    print(f"UMAP on {n:,} samples...")
     reducer = umap.UMAP(
         n_components=2,
         n_neighbors=15,
@@ -91,7 +91,7 @@ def run_umap(X_scaled: np.ndarray, df: pd.DataFrame,
         color_continuous_scale=["#e94560", "#f5a623", "#0f3460", "#16213e"],
         symbol="is_anomaly",
         hover_data=["event_id", "hostname", "image_base"],
-        title="🗺️  UMAP — Isolation Forest Anomaly Scores",
+        title="UMAP — Isolation Forest Anomaly Scores",
         template="plotly_dark",
         opacity=0.55,
         height=650,
@@ -116,7 +116,7 @@ def anomaly_stage(normalized_path: str = NORMALIZED_PARQUET,
     """
     os.makedirs(os.path.dirname(anomalies_path), exist_ok=True)
 
-    print("📥  Loading normalized parquet …")
+    print("Loading normalized parquet...")
     df = pd.read_parquet(normalized_path)
     print(f"    Shape: {df.shape}")
 
@@ -128,7 +128,7 @@ def anomaly_stage(normalized_path: str = NORMALIZED_PARQUET,
 
     anomalies_df = df[df["is_anomaly"] == 1].copy()
     anomalies_df.to_parquet(anomalies_path, index=False)
-    print(f"💾  Anomalies saved → {anomalies_path}")
+    print(f"Anomalies saved -> {anomalies_path}")
 
     # Summary table
     summary = (

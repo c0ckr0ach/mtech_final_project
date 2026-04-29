@@ -6,7 +6,6 @@ and visualises topics interactively.
 import os
 import re
 import nltk
-import numpy as np
 import pandas as pd
 from tqdm.auto import tqdm
 
@@ -128,12 +127,12 @@ def topic_stage(anomalies_path: str = ANOMALIES_PARQUET,
     os.makedirs(os.path.dirname(topics_path), exist_ok=True)
     os.makedirs(model_dir, exist_ok=True)
 
-    print("📥  Loading anomalies …")
+    print("Loading anomalies...")
     df = pd.read_parquet(anomalies_path)
     print(f"    Shape: {df.shape}")
 
     # ── Prepare corpus ────────────────────────────────────────────────────────
-    print("🧹  Cleaning log text …")
+    print("Cleaning log text...")
 
     def _col(name: str) -> pd.Series:
         """Safely retrieve a column; return empty strings if absent."""
@@ -152,7 +151,7 @@ def topic_stage(anomalies_path: str = ANOMALIES_PARQUET,
     print(f"    Sample doc : {docs[0][:120]}")
 
     # ── Fit BERTopic ──────────────────────────────────────────────────────────
-    print("\n🔬  Fitting BERTopic …")
+    print("\nFitting BERTopic...")
     topic_model = build_topic_model()
     topics, probs = topic_model.fit_transform(docs)
 
@@ -162,38 +161,38 @@ def topic_stage(anomalies_path: str = ANOMALIES_PARQUET,
                          for p in probs]
 
     n_topics = len(set(topics)) - (1 if -1 in topics else 0)
-    print(f"\n✅  Discovered {n_topics} topics  (topic -1 = noise/outliers)")
+    print(f"\nDiscovered {n_topics} topics (topic -1 = noise/outliers)")
 
     # ── Topic info ────────────────────────────────────────────────────────────
     topic_info = topic_model.get_topic_info()
     print("\nTop topics:\n", topic_info.head(12).to_string(index=False))
 
     # ── Visualisations ────────────────────────────────────────────────────────
-    print("\n📊  Generating visualisations …")
+    print("\nGenerating visualisations...")
 
     fig_bar = topic_model.visualize_barchart(
         top_n_topics=min(12, n_topics), n_words=8
     )
     fig_bar.update_layout(template="plotly_dark",
-                          title="📊 Security Event Topics — Top Keywords")
+                          title="Security Event Topics — Top Keywords")
     fig_bar.show()
 
     if n_topics >= 2:
         fig_map = topic_model.visualize_topics()
         fig_map.update_layout(template="plotly_dark",
-                              title="🗺️ Inter-topic Distance Map")
+                              title="Inter-topic Distance Map")
         fig_map.show()
 
         fig_heat = topic_model.visualize_heatmap()
         fig_heat.update_layout(template="plotly_dark",
-                               title="🔥 Topic Similarity Heatmap")
+                               title="Topic Similarity Heatmap")
         fig_heat.show()
 
     # ── Save ──────────────────────────────────────────────────────────────────
     df.to_parquet(topics_path, index=False)
     topic_model.save(os.path.join(model_dir, "model.pkl"))
-    print(f"\n💾  Saved annotated parquet → {topics_path}")
-    print(f"💾  Saved BERTopic model    → {model_dir}")
+    print(f"\nSaved annotated parquet -> {topics_path}")
+    print(f"Saved BERTopic model    -> {model_dir}")
 
     return df, topic_model
 

@@ -3,7 +3,7 @@ Stage 4b: LLM Analysis — DSPy + Ollama
 Defines the DSPy signature, ChainOfThought module, and BootstrapFewShot
 optimizer. Runs threat analysis on the top anomalous events per BERTopic cluster.
 """
-import os, json, subprocess, time
+import os, json
 import pandas as pd
 import dspy
 import chromadb
@@ -37,7 +37,7 @@ def configure_dspy(model: str = OLLAMA_MODEL):
         max_tokens=1024,
     )
     dspy.configure(lm=lm)
-    print(f"✅  DSPy configured → ollama/{model}")
+    print(f"  DSPy configured -> ollama/{model}")
     return lm
 
 
@@ -149,7 +149,7 @@ FEW_SHOT_EXAMPLES = [
 def optimize_analyzer(analyzer: SecurityAnalyzer,
                       examples: list = FEW_SHOT_EXAMPLES) -> SecurityAnalyzer:
     """Run BootstrapFewShot to auto-select best prompts."""
-    print("🎯  Running DSPy BootstrapFewShot optimisation …")
+    print("  Running DSPy BootstrapFewShot optimisation...")
     optimizer = dspy.BootstrapFewShot(max_bootstrapped_demos=2,
                                       max_labeled_demos=2)
     # Metric: response is non-empty (adjust with a real eval if labels exist)
@@ -159,7 +159,7 @@ def optimize_analyzer(analyzer: SecurityAnalyzer,
                 bool(pred.remediation_steps))
 
     optimized = optimizer.compile(analyzer, trainset=examples, metric=metric)
-    print("✅  Optimisation complete.")
+    print("  Optimisation complete.")
     return optimized
 
 
@@ -186,20 +186,20 @@ def build_anomaly_context(row: pd.Series) -> str:
 def display_result(result: dict, idx: int):
     md = f"""
 ---
-### 🔍 Analysis #{idx+1} — Topic {result['topic_id']}
+### Analysis #{idx+1} — Topic {result['topic_id']}
 **Event:** `{result['event_id']}` on `{result['hostname']}`
 **Topic keywords:** _{result['topic_keywords']}_
 
-**🛡️ Threat Analysis**
+**Threat Analysis**
 {result['threat_analysis']}
 
-**⚔️ MITRE ATT&CK Technique**
+**MITRE ATT&CK Technique**
 `{result['mitre_technique']}`
 
-**🔧 Remediation Steps**
+**Remediation Steps**
 {result['remediation_steps']}
 
-**🚦 Severity:** {result['severity_rating']}
+**Severity:** {result['severity_rating']}
 ---
 """
     display(Markdown(md))
@@ -222,17 +222,17 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
         try:
             analyzer = optimize_analyzer(analyzer)
         except Exception as e:
-            print(f"  ⚠️  Optimisation skipped: {e}")
+            print(f"  Optimisation skipped: {e}")
 
     # ── Load data ─────────────────────────────────────────────────────────────
-    print(f"\n📥  Loading {topics_path} …")
+    print(f"\n  Loading {topics_path}...")
     df = pd.read_parquet(topics_path)
     valid_topics = sorted(
         [t for t in df["topic"].unique() if t != -1],
         key=lambda t: df[df["topic"] == t]["anomaly_score"].mean()
     )[:TOP_N_TOPICS]
 
-    print(f"🔎  Analysing {len(valid_topics)} topics × {EVENTS_PER_TOPIC} events each …\n")
+    print(f"  Analysing {len(valid_topics)} topics × {EVENTS_PER_TOPIC} events each...\n")
 
     results = []
 
@@ -269,13 +269,13 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
                 display_result(rec, len(results) - 1)
 
             except Exception as e:
-                print(f"  ⚠️  Topic {topic_id} event failed: {e}")
+                print(f"  Topic {topic_id} event failed: {e}")
 
     # ── Save results ──────────────────────────────────────────────────────────
     os.makedirs(os.path.dirname(results_path), exist_ok=True)
     with open(results_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
-    print(f"\n💾  Results saved → {results_path}")
+    print(f"\n  Results saved -> {results_path}")
     print(f"    Total analyses: {len(results)}")
     return results
 

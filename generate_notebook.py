@@ -30,18 +30,18 @@ def read_pipeline_module(module_name):
 cells = []
 
 # ── TITLE ────────────────────────────────────────────────────────────────────
-cells.append(md("""# 🛡️ Security Log Analysis Pipeline
+cells.append(md("""# Security Log Analysis Pipeline
 ### APT29 Evaluation Dataset · Sysmon Events
 **Pipeline**: Parse → Anomaly Detection → BERTopic → RAG + LLM (DSPy + Ollama)
 
-> ⚡ **Runtime**: Set Colab to **GPU** (T4 or A100) before running.  
-> 📁 **Dataset**: Automatically fetched from the Git repository and extracted to `/content/data_path`.
+> **Runtime**: Set Colab to **GPU** (T4 or A100) before running.  
+> **Dataset**: Automatically fetched from the Git repository and extracted to `/content/data_path`.
 
 ---
 """))
 
 # ── SETUP ────────────────────────────────────────────────────────────────────
-cells.append(md("## ⚙️ Setup — Install Dependencies"))
+cells.append(md("## Setup — Install Dependencies"))
 
 cells.append(code("""\
 # Install all pipeline dependencies
@@ -58,7 +58,7 @@ cells.append(code("""\
 
 import nltk
 nltk.download('stopwords', quiet=True)
-print("✅ All dependencies installed")
+print("All dependencies installed")
 """))
 
 cells.append(md("### Fetch and Extract Dataset"))
@@ -78,13 +78,13 @@ if not os.path.exists(EXTRACT_DIR):
     os.makedirs(EXTRACT_DIR, exist_ok=True)
 
 if not os.path.exists(ZIP_PATH):
-    print(f"⬇️ Downloading dataset from {DATA_REPO_URL}...")
+    print(f"Downloading dataset from {DATA_REPO_URL}...")
     !wget -q {DATA_REPO_URL} -O {ZIP_PATH}
     
 if os.path.exists(ZIP_PATH):
     if not zipfile.is_zipfile(ZIP_PATH):
-        raise ValueError(f"❌ The downloaded file is not a valid zip file! Did you forget to update the placeholder DATA_REPO_URL?\\nCurrent URL: {DATA_REPO_URL}")
-    print("📦 Extracting dataset...")
+        raise ValueError(f"The downloaded file is not a valid zip file! Did you forget to update the placeholder DATA_REPO_URL?\\nCurrent URL: {DATA_REPO_URL}")
+    print("Extracting dataset...")
     with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
         zip_ref.extractall(EXTRACT_DIR)
 
@@ -92,11 +92,11 @@ if os.path.exists(ZIP_PATH):
 json_files = glob.glob(f"{EXTRACT_DIR}/**/*.json", recursive=True)
 if json_files:
     DATA_PATH = json_files[0]
-    print(f"✅ Found dataset: {DATA_PATH}")
+    print(f"Found dataset: {DATA_PATH}")
 else:
     # Fallback to the default expected path
     DATA_PATH = f"{EXTRACT_DIR}/apt29_evals_day1_manual_2020-05-01225525.json"
-    print(f"⚠️ No JSON found dynamically, falling back to: {DATA_PATH}")
+    print(f"No JSON found dynamically, falling back to: {DATA_PATH}")
 """))
 
 cells.append(md("### Global configuration"))
@@ -121,12 +121,12 @@ EVENTS_PER_TOPIC   = 3              # worst anomalies per topic
 
 import os
 os.makedirs("/content/data", exist_ok=True)
-print("✅ Config ready")
+print("Config ready")
 """))
 
 # ── STAGE 1 ──────────────────────────────────────────────────────────────────
 cells.append(md("""---
-## 📂 Stage 1 — Parse & Normalize
+## Stage 1 — Parse & Normalize
 
 Streams the 385 MB NDJSON file line-by-line (no OOM), normalises each Sysmon
 event into a flat schema, engineers ML features, and saves `normalized.parquet`.
@@ -179,7 +179,7 @@ print(df_norm[['event_id','hostname','channel','severity','message_len']].descri
 
 # ── STAGE 2 ──────────────────────────────────────────────────────────────────
 cells.append(md("""---
-## 🚨 Stage 2 — Anomaly Detection (Isolation Forest + UMAP)
+## Stage 2 — Anomaly Detection (Isolation Forest + UMAP)
 
 Trains an **Isolation Forest** on the engineered feature matrix (no labels needed).
 Events in the bottom `CONTAMINATION` percentile are flagged as anomalous.
@@ -215,7 +215,7 @@ display(top)
 
 # ── STAGE 3 ──────────────────────────────────────────────────────────────────
 cells.append(md("""---
-## 🔬 Stage 3 — BERTopic (Semantic Topic Modelling)
+## Stage 3 — BERTopic (Semantic Topic Modelling)
 
 Runs BERTopic on the anomalous event corpus:
 1. **Clean** log text (strip GUIDs, hex, paths, timestamps)
@@ -254,7 +254,7 @@ for tid, kw in list(kw_map.items())[:8]:
 
 # ── STAGE 4a ─────────────────────────────────────────────────────────────────
 cells.append(md("""---
-## 📚 Stage 4a — Build RAG Knowledge Base (ChromaDB)
+## Stage 4a — Build RAG Knowledge Base (ChromaDB)
 
 Downloads and indexes **5 cybersecurity knowledge sources**:
 
@@ -266,7 +266,7 @@ Downloads and indexes **5 cybersecurity knowledge sources**:
 | `cisa_kev` | CISA KEV | Known exploited CVEs + required actions |
 | `sigma_rules` | SigmaHQ | 3000+ YAML detection rules |
 
-> ⏱️ This cell takes **5–15 min** (cloning Sigma is the slow part). Run once; ChromaDB persists to disk.
+> This cell takes **5–15 min** (cloning Sigma is the slow part). Run once; ChromaDB persists to disk.
 """))
 
 cells.append(code(read_pipeline_module("stage4a_rag_kb.py")))
@@ -309,7 +309,7 @@ time.sleep(4)
 """))
 
 cells.append(md("""---
-## 🤖 Stage 4b — LLM Threat Analysis (DSPy + Ollama + RAG)
+## Stage 4b — LLM Threat Analysis (DSPy + Ollama + RAG)
 
 ### What happens per anomalous event:
 1. **Build context** string from event fields
@@ -321,7 +321,7 @@ cells.append(md("""---
    - `remediation_steps` — numbered list
    - `severity_rating` — Critical / High / Medium / Low
 
-> 🎯 **DSPy `BootstrapFewShot`** auto-optimises prompt selection using 2 APT29 labelled examples.
+> **DSPy `BootstrapFewShot`** auto-optimises prompt selection using 2 APT29 labelled examples.
 """))
 
 cells.append(code(read_pipeline_module("stage4b_llm.py")))
@@ -336,7 +336,7 @@ results = llm_analysis_stage(
 
 # ── RESULTS DASHBOARD ────────────────────────────────────────────────────────
 cells.append(md("""---
-## 📊 Results Dashboard
+## Results Dashboard
 
 Summary visualisations of the LLM analysis output.
 """))
@@ -350,7 +350,8 @@ with open(RESULTS_JSON) as f:
     results = json.load(f)
 
 res_df = pd.DataFrame(results)
-display(res_df[["topic_id","event_id","hostname","mitre_technique","severity_rating"]].head(20))
+res_df = res_df.rename(columns={"mitre_technique": "Attack Technique", "remediation_steps": "Fixes"})
+display(res_df[["topic_id","event_id","hostname","Attack Technique","Fixes","severity_rating"]].head(20))
 """))
 
 cells.append(code("""\
@@ -359,7 +360,7 @@ sev_counts = res_df["severity_rating"].str.extract(r"(Critical|High|Medium|Low)"
 fig = px.pie(
     values=sev_counts.values,
     names=sev_counts.index,
-    title="🚦 Severity Distribution of Detected Anomalies",
+    title="Severity Distribution of Detected Anomalies",
     color=sev_counts.index,
     color_discrete_map={"Critical":"#e94560","High":"#f5a623","Medium":"#f0e130","Low":"#1db954"},
     template="plotly_dark",
@@ -371,12 +372,12 @@ fig.show()
 
 cells.append(code("""\
 # MITRE technique frequency
-tech_counts = res_df["mitre_technique"].value_counts().head(12)
+tech_counts = res_df["Attack Technique"].value_counts().head(12)
 fig = px.bar(
     x=tech_counts.values,
     y=tech_counts.index,
     orientation="h",
-    title="⚔️ Most Frequent MITRE ATT&CK Techniques",
+    title="Most Frequent MITRE ATT&CK Techniques",
     template="plotly_dark",
     color=tech_counts.values,
     color_continuous_scale="reds",
@@ -405,7 +406,7 @@ fig = go.Figure(go.Heatmap(
     colorbar_title="Severity",
 ))
 fig.update_layout(
-    title="🔥 Severity Heatmap — Topic × EventID",
+    title="Severity Heatmap — Topic × EventID",
     template="plotly_dark",
     height=max(300, len(pivot)*40),
 )
@@ -413,7 +414,7 @@ fig.show()
 """))
 
 cells.append(md("""---
-## ✅ Pipeline Complete
+## Pipeline Complete
 
 All outputs saved to `/content/data/`:
 | File | Description |

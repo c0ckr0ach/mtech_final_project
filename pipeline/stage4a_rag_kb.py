@@ -6,7 +6,6 @@ Sources: MITRE ATT&CK, MITRE D3FEND, MITRE CAR, CISA KEV, SigmaHQ Rules
 import os, re, json, subprocess
 import requests
 import chromadb
-import numpy as np
 from sentence_transformers import SentenceTransformer
 from tqdm.auto import tqdm
 
@@ -22,7 +21,7 @@ _emb_model: SentenceTransformer = None
 def _get_embedder():
     global _emb_model
     if _emb_model is None:
-        print("🤖  Loading embedding model …")
+        print("Loading embedding model...")
         _emb_model = SentenceTransformer(EMBED_MODEL)
     return _emb_model
 
@@ -52,14 +51,14 @@ def _upsert_collection(client: chromadb.Client,
         emb = embedder.encode(bd, show_progress_bar=False).tolist()
         col.add(documents=bd, ids=bi, embeddings=emb, metadatas=bm)
 
-    print(f"  ✅  {name}: {col.count():,} docs indexed")
+    print(f"  {name}: {col.count():,} docs indexed")
     return col
 
 
 # ── Source 1: MITRE ATT&CK ───────────────────────────────────────────────────
 
 def load_mitre_attack(client):
-    print("\n📥  MITRE ATT&CK v14 …")
+    print("\nMITRE ATT&CK v14...")
     url = ("https://raw.githubusercontent.com/mitre/cti/master/"
            "enterprise-attack/enterprise-attack.json")
     data = requests.get(url, timeout=120).json()
@@ -88,13 +87,13 @@ def load_mitre_attack(client):
 # ── Source 2: MITRE D3FEND ───────────────────────────────────────────────────
 
 def load_d3fend(client):
-    print("\n📥  MITRE D3FEND …")
+    print("\nMITRE D3FEND...")
     url = "https://d3fend.mitre.org/api/technique/all.json"
     try:
         data = requests.get(url, timeout=60).json()
         techniques = data.get("techniques") or data.get("data") or []
     except Exception as e:
-        print(f"  ⚠️  D3FEND fetch failed: {e}")
+        print(f"  D3FEND fetch failed: {e}")
         return
 
     docs, ids, metas = [], [], []
@@ -110,13 +109,13 @@ def load_d3fend(client):
     if docs:
         _upsert_collection(client, "mitre_d3fend", docs, ids, metas)
     else:
-        print("  ⚠️  D3FEND returned 0 usable techniques.")
+        print("  D3FEND returned 0 usable techniques.")
 
 
 # ── Source 3: MITRE CAR ──────────────────────────────────────────────────────
 
 def load_car(client):
-    print("\n📥  MITRE CAR analytics …")
+    print("\nMITRE CAR analytics...")
     car_dir = os.path.join(KB_DIR, "car")
     if not os.path.exists(car_dir):
         subprocess.run(
@@ -129,7 +128,7 @@ def load_car(client):
     docs, ids, metas = [], [], []
     analytics_dir = os.path.join(car_dir, "analytics")
     if not os.path.exists(analytics_dir):
-        print("  ⚠️  CAR analytics directory not found.")
+        print("  CAR analytics directory not found.")
         return
 
     for fname in os.listdir(analytics_dir):
@@ -159,7 +158,7 @@ def load_car(client):
 # ── Source 4: CISA KEV ───────────────────────────────────────────────────────
 
 def load_cisa_kev(client):
-    print("\n📥  CISA Known Exploited Vulnerabilities …")
+    print("\nCISA Known Exploited Vulnerabilities...")
     url = ("https://www.cisa.gov/sites/default/files/feeds/"
            "known_exploited_vulnerabilities.json")
     data = requests.get(url, timeout=60).json()
@@ -186,7 +185,7 @@ def load_cisa_kev(client):
 # ── Source 5: SigmaHQ Rules ──────────────────────────────────────────────────
 
 def load_sigma(client):
-    print("\n📥  SigmaHQ detection rules (sparse clone) …")
+    print("\nSigmaHQ detection rules (sparse clone)...")
     sigma_dir = os.path.join(KB_DIR, "sigma")
     if not os.path.exists(sigma_dir):
         subprocess.run(
@@ -236,10 +235,56 @@ def load_sigma(client):
         _upsert_collection(client, "sigma_rules", docs, ids, metas)
 
 
+# ── Source 6: MSRC CVRF ──────────────────────────────────────────────────────
+
+def load_msrc_cvrf(client):
+    print("\nMicrosoft Security Update Summaries (MSRC CVRF) (2023+)...")
+    url = "https://api.msrc.microsoft.com/cvrf/v3.0/updates"
+    try:
+        data = requests.get(url, timeout=60).json()
+        updates = data.get("value", [])
+    except Exception as e:
+        print(f"  MSRC fetch failed: {e}")
+        return
+
+    docs, ids, metas = [], [], []
+    for u in updates:
+        id_str = u.get("ID", "")
+        if not id_str:
+            continue
+        
+        # Limit to 2023 onwards
+        year_str = id_str[:4]
+        try:
+            if int(year_str) < 2023:
+                continue
+        except ValueError:
+            continue
+
+        doc_title = u.get("DocumentTitle", "")
+        init_date = u.get("InitialReleaseDate", "")
+        cvrf_url = u.get("CvrfUrl", "")
+
+        text = (
+            f"MSRC Update: {id_str} | "
+            f"Title: {doc_title} | "
+            f"Release Date: {init_date} | "
+            f"CVRF URL: {cvrf_url}"
+        )[:2000]
+
+        uid = f"msrc_{id_str}"
+        docs.append(text)
+        ids.append(uid)
+        metas.append({"source": "msrc_cvrf", "update_id": id_str, "title": doc_title})
+
+    if docs:
+        _upsert_collection(client, "msrc_cvrf", docs, ids, metas)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def build_knowledge_base():
-    """Download and index all 5 knowledge sources."""
+    """Download and index all knowledge sources."""
     os.makedirs(KB_DIR, exist_ok=True)
     client = _get_client()
 
@@ -248,8 +293,9 @@ def build_knowledge_base():
     load_car(client)
     load_cisa_kev(client)
     load_sigma(client)
+    load_msrc_cvrf(client)
 
-    print("\n🏁  Knowledge base complete.")
+    print("\nKnowledge base complete.")
     print(f"    Collections: {[c.name for c in client.list_collections()]}")
     return client
 
@@ -275,7 +321,7 @@ def query_all_collections(client: chromadb.Client,
                 src = meta.get("source", col.name).upper()
                 parts.append(f"[{src}]\n{doc[:600]}")
         except Exception as e:
-            print(f"  ⚠️  {col.name}: {e}")
+            print(f"  {col.name}: {e}")
 
     return "\n\n---\n\n".join(parts)
 

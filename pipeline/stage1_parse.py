@@ -104,7 +104,7 @@ def parse_stage(data_path: str = DATA_PATH,
 
     chunks, records, errors, total = [], [], 0, 0
 
-    print(f"📂  Streaming: {data_path}")
+    print(f"Streaming: {data_path}")
     with open(data_path, "r", encoding="utf-8", errors="replace") as fh:
         for line in tqdm(fh, desc="Parsing events", unit=" lines"):
             line = line.strip()
@@ -125,7 +125,7 @@ def parse_stage(data_path: str = DATA_PATH,
     if records:
         chunks.append(pd.DataFrame(records))
 
-    print(f"\n✅  Parsed {total:,} events | JSON errors: {errors:,}")
+    print(f"\nParsed {total:,} events | JSON errors: {errors:,}")
 
     df = pd.concat(chunks, ignore_index=True)
 
@@ -140,7 +140,7 @@ def parse_stage(data_path: str = DATA_PATH,
                                                        expand=False).fillna("Other")
 
     df.to_parquet(out_path, index=False)
-    print(f"💾  Saved → {out_path}  ({df.shape[0]:,} rows × {df.shape[1]} cols)")
+    print(f"Saved -> {out_path}  ({df.shape[0]:,} rows x {df.shape[1]} cols)")
     return df
 
 
