@@ -56,8 +56,6 @@ def normalize_event(ev: dict) -> dict:
 
     return {
         # ── identifiers ──────────────────────────────────────────────────────
-        "record_number"    : _safe_int(ev.get("RecordNumber")),
-        "event_time"       : ev.get("EventTime", ""),
         "timestamp"        : dt.isoformat() if dt else "",
         "hour_of_day"      : dt.hour        if dt else -1,
         "day_of_week"      : dt.weekday()   if dt else -1,
@@ -71,7 +69,6 @@ def normalize_event(ev: dict) -> dict:
         # ── identity ─────────────────────────────────────────────────────────
         "account_name"     : ev.get("AccountName", ""),
         "domain"           : ev.get("Domain", ""),
-        "user_id"          : ev.get("UserID", ""),
         "is_system"        : 1 if ev.get("AccountName", "").upper() == "SYSTEM" else 0,
         # ── process / image ──────────────────────────────────────────────────
         "image"            : img,
@@ -87,8 +84,6 @@ def normalize_event(ev: dict) -> dict:
         # ── text ─────────────────────────────────────────────────────────────
         "message"          : msg,
         "message_len"      : len(msg),
-        "call_trace"       : ev.get("CallTrace", ""),
-        "rule_name"        : ev.get("RuleName", ""),
     }
 
 

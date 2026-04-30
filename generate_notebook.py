@@ -26,35 +26,22 @@ def read_pipeline_module(module_name):
     content = re.split(r'^if __name__ == "__main__":', content, flags=re.MULTILINE)[0]
     return content.strip()
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 cells = []
 
-# ── TITLE ────────────────────────────────────────────────────────────────────
-cells.append(md("""# Security Log Analysis Pipeline
-### APT29 Evaluation Dataset · Sysmon Events
-**Pipeline**: Parse → Anomaly Detection → BERTopic → RAG + LLM (DSPy + Ollama)
+cells.append(md("""# Security Log Analysis Pipeline"""))
 
-> **Runtime**: Set Colab to **GPU** (T4 or A100) before running.  
-> **Dataset**: Automatically fetched from the Git repository and extracted to `/content/data_path`.
-
----
-"""))
-
-# ── SETUP ────────────────────────────────────────────────────────────────────
-cells.append(md("## Setup — Install Dependencies"))
 
 cells.append(code("""\
 # Install all pipeline dependencies
 !pip install -q \\
-    pandas pyarrow ijson \\
+    pandas pyarrow \\
     scikit-learn umap-learn \\
-    plotly kaleido \\
+    plotly \\
     bertopic sentence-transformers hdbscan \\
     chromadb \\
-    langchain langchain-community \\
     dspy-ai \\
-    mitreattack-python \\
-    nltk pyyaml regex requests tqdm
+    nltk pyyaml requests tqdm
 
 import nltk
 nltk.download('stopwords', quiet=True)
@@ -68,44 +55,26 @@ import os
 import zipfile
 import glob
 
-# URL to the dataset in your GitHub repo (e.g., a .zip file containing the JSON)
-# Replace this with the actual URL to your dataset zip file
 DATA_REPO_URL = "https://raw.githubusercontent.com/OTRF/Security-Datasets/master/datasets/compound/apt29/day1/apt29_evals_day1_manual.zip"
 ZIP_PATH = "/content/apt29_evals_day1_manual.zip"
 EXTRACT_DIR = "/content/data_path"
 
-if not os.path.exists(EXTRACT_DIR):
-    os.makedirs(EXTRACT_DIR, exist_ok=True)
+os.makedirs(EXTRACT_DIR, exist_ok=True)
+print(f"Downloading dataset from {DATA_REPO_URL}...")
+!wget -q {DATA_REPO_URL} -O {ZIP_PATH}
 
-if not os.path.exists(ZIP_PATH):
-    print(f"Downloading dataset from {DATA_REPO_URL}...")
-    !wget -q {DATA_REPO_URL} -O {ZIP_PATH}
-    
-if os.path.exists(ZIP_PATH):
-    if not zipfile.is_zipfile(ZIP_PATH):
-        raise ValueError(f"The downloaded file is not a valid zip file! Did you forget to update the placeholder DATA_REPO_URL?\\nCurrent URL: {DATA_REPO_URL}")
-    print("Extracting dataset...")
-    with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
-        zip_ref.extractall(EXTRACT_DIR)
+print("Extracting dataset...")
+with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
+    zip_ref.extractall(EXTRACT_DIR)
 
-# Dynamically find the extracted JSON file to use in the pipeline
-json_files = glob.glob(f"{EXTRACT_DIR}/**/*.json", recursive=True)
-if json_files:
-    DATA_PATH = json_files[0]
-    print(f"Found dataset: {DATA_PATH}")
-else:
-    # Fallback to the default expected path
-    DATA_PATH = f"{EXTRACT_DIR}/apt29_evals_day1_manual_2020-05-01225525.json"
-    print(f"No JSON found dynamically, falling back to: {DATA_PATH}")
+DATA_PATH = glob.glob(f"{EXTRACT_DIR}/**/*.json", recursive=True)[0]
+print(f"Found dataset: {DATA_PATH}")
 """))
 
 cells.append(md("### Global configuration"))
 
 cells.append(code("""\
 # ─── EDIT THESE PATHS IF NEEDED ───────────────────────────────────────────
-# DATA_PATH is set dynamically above, but we keep a fallback just in case
-if 'DATA_PATH' not in locals():
-    DATA_PATH = "/content/data_path/apt29_evals_day1_manual_2020-05-01225525.json"
 
 NORMALIZED_PARQUET = "/content/data/normalized.parquet"
 ANOMALIES_PARQUET  = "/content/data/anomalies.parquet"
