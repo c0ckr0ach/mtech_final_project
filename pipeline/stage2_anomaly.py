@@ -11,13 +11,11 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 import umap
 
-# ── Config ────────────────────────────────────────────────────────────────────
 NORMALIZED_PARQUET  = "/content/data/normalized.parquet"
 ANOMALIES_PARQUET   = "/content/data/anomalies.parquet"
 CONTAMINATION       = 0.05          # expected anomaly fraction
 UMAP_SAMPLE         = 60_000        # rows sent to UMAP (memory guard)
 RANDOM_STATE        = 42
-# ──────────────────────────────────────────────────────────────────────────────
 
 
 def build_feature_matrix(df: pd.DataFrame):

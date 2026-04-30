@@ -45,7 +45,6 @@ cells.append(code("""\
 
 import nltk
 nltk.download('stopwords', quiet=True)
-print("All dependencies installed")
 """))
 
 cells.append(md("### Fetch and Extract Dataset"))
@@ -60,22 +59,19 @@ ZIP_PATH = "/content/apt29_evals_day1_manual.zip"
 EXTRACT_DIR = "/content/data_path"
 
 os.makedirs(EXTRACT_DIR, exist_ok=True)
-print(f"Downloading dataset from {DATA_REPO_URL}...")
 !wget -q {DATA_REPO_URL} -O {ZIP_PATH}
 
-print("Extracting dataset...")
+print("extracting dataset")
 with zipfile.ZipFile(ZIP_PATH, 'r') as zip_ref:
     zip_ref.extractall(EXTRACT_DIR)
 
 DATA_PATH = glob.glob(f"{EXTRACT_DIR}/**/*.json", recursive=True)[0]
-print(f"Found dataset: {DATA_PATH}")
+print(f"dataset loaded")
 """))
 
 cells.append(md("### Global configuration"))
 
 cells.append(code("""\
-# ─── EDIT THESE PATHS IF NEEDED ───────────────────────────────────────────
-
 NORMALIZED_PARQUET = "/content/data/normalized.parquet"
 ANOMALIES_PARQUET  = "/content/data/anomalies.parquet"
 TOPICS_PARQUET     = "/content/data/anomalies_with_topics.parquet"
@@ -83,33 +79,18 @@ CHROMA_DIR         = "/content/data/chroma_db"
 RESULTS_JSON       = "/content/data/llm_results.json"
 TOPIC_MODEL_DIR    = "/content/data/bertopic_model"
 
-OLLAMA_MODEL       = "llama3"       # or "mistral", "phi3"
+OLLAMA_MODEL       = "llama3"       # change model if needed
 CONTAMINATION      = 0.05           # fraction flagged as anomalous
 TOP_N_TOPICS       = 12             # topics passed to LLM
 EVENTS_PER_TOPIC   = 3              # worst anomalies per topic
 
 import os
 os.makedirs("/content/data", exist_ok=True)
-print("Config ready")
 """))
 
 # ── STAGE 1 ──────────────────────────────────────────────────────────────────
 cells.append(md("""---
 ## Stage 1 — Parse & Normalize
-
-Streams the 385 MB NDJSON file line-by-line (no OOM), normalises each Sysmon
-event into a flat schema, engineers ML features, and saves `normalized.parquet`.
-
-**Key features extracted**:
-| Feature | Description |
-|---|---|
-| `event_id` | Sysmon event type (10=ProcessAccess, 11=FileCreate, 13=RegistrySet …) |
-| `process_depth` | Depth of the process image path |
-| `granted_access` | Hex access rights → int |
-| `is_system` | Is the account NT AUTHORITY\\SYSTEM? |
-| `hour_of_day` / `day_of_week` | Temporal features |
-| `message_len` | Raw message character count |
-| `eid_*` | One-hot top-15 EventIDs |
 """))
 
 cells.append(code(read_pipeline_module("stage1_parse.py")))
