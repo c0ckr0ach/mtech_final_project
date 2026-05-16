@@ -29,21 +29,28 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from openai import OpenAI
 from datasets import Dataset
 from ragas import evaluate, RunConfig
-from ragas.llms import LangchainLLMWrapper
-from ragas.embeddings import LangchainEmbeddingsWrapper
+from ragas.llms import llm_factory
 
-# Import from the correct v0.2+ location to avoid deprecation warnings
+# RAGAS v0.2+: metrics are classes that must be instantiated, not module singletons.
+# Import from the correct v0.2+ location.
 try:
     from ragas.metrics.collections import (
-        faithfulness, answer_relevancy, context_precision, context_recall
+        Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
     )
+    RAGAS_METRICS = [
+        Faithfulness(), AnswerRelevancy(), ContextPrecision(), ContextRecall()
+    ]
+    METRIC_COLS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
 except ImportError:
-    # Fallback for older ragas versions
+    # Older ragas ≤ v0.1 — metrics were singletons
     from ragas.metrics import (
         faithfulness, answer_relevancy, context_precision, context_recall
     )
+    RAGAS_METRICS = [faithfulness, answer_relevancy, context_precision, context_recall]
+    METRIC_COLS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
 
 RESULTS_JSON    = "/content/data/llm_results.json"
 LLM_METRICS_JSON = "/content/data/llm_metrics.json"
@@ -58,23 +65,22 @@ plt.style.use("dark_background")
 
 def _configure_ragas_llm(model: str = OLLAMA_MODEL):
     """
-    Configure RAGAS LLM and embeddings for local Ollama.
+    Configure RAGAS LLM and embeddings for local Ollama (RAGAS v0.2+ API).
 
-    LLM  : ChatOllama via LangchainLLMWrapper.
-           ChatOllama is the correct (non-deprecated) class in langchain-ollama.
-    Emb  : HuggingFaceEmbeddings via LangchainEmbeddingsWrapper.
-           Uses `all-MiniLM-L6-v2` (already installed via sentence-transformers
-           in Stage 3), so no Ollama involvement for embeddings — faster and
-           avoids the `embed_query` AttributeError from RAGAS's embedding_factory.
+    LLM : llm_factory pointed at Ollama's OpenAI-compatible /v1 endpoint.
+          api_key can be any non-empty string; Ollama ignores it.
+    Emb : RAGAS's own HuggingFaceEmbeddings wrapper around all-MiniLM-L6-v2.
+          sentence-transformers is already installed from Stage 3.
+          This avoids routing embedding calls through Ollama entirely.
     """
-    from langchain_ollama import ChatOllama
-    from langchain_community.embeddings import HuggingFaceEmbeddings
+    from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
 
-    lc_llm = ChatOllama(model=model, base_url=OLLAMA_BASE_URL, temperature=0)
-    llm    = LangchainLLMWrapper(lc_llm)
-
-    lc_emb = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-    emb    = LangchainEmbeddingsWrapper(lc_emb)
+    ollama_client = OpenAI(
+        base_url=f"{OLLAMA_BASE_URL}/v1",
+        api_key="ollama",
+    )
+    llm = llm_factory(model=model, client=ollama_client)
+    emb = RagasHFEmbeddings(model_name="all-MiniLM-L6-v2")
 
     return llm, emb
 
@@ -128,26 +134,23 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
     """
     run_cfg = RunConfig(
         max_workers=1,    # sequential — critical for local Ollama
-        timeout=180,      # 3 min per call; llama3 on CPU can be slow
+        timeout=180,      # 3 min per call; llama3 on GPU should be well within this
         max_retries=2,
     )
     result = evaluate(
         dataset,
-        metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
+        metrics=RAGAS_METRICS,   # pre-instantiated metric objects
         llm=llm,
         embeddings=emb,
         run_config=run_cfg,
         raise_exceptions=False,
     )
 
-    # RAGAS returns an EvaluationResult object (not a dict) — use to_pandas()
-    df      = result.to_pandas()
-    metric_cols = [c for c in
-                   ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
-                   if c in df.columns]
-    means   = df[metric_cols].mean(numeric_only=True)
+    # RAGAS returns an EvaluationResult — use to_pandas() to get per-row scores
+    df   = result.to_pandas()
+    cols = [c for c in METRIC_COLS if c in df.columns]
     return {k: round(float(v), 4) if pd.notna(v) else 0.0
-            for k, v in means.items()}
+            for k, v in df[cols].mean(numeric_only=True).items()}
 
 
 # ── Radar chart ───────────────────────────────────────────────────────────────
