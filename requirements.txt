@@ -18,3 +18,10 @@ requests
 tqdm
 pyyaml
 nbformat
+# ── Research evaluation additions ────────────────────────────────────────────
+torch
+ragas
+datasets
+matplotlib
+seaborn
+langchain-ollama

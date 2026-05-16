@@ -1,6 +1,6 @@
 """
 generate_notebook.py
-Assembles main.ipynb from the four pipeline stage modules.
+Assembles main.ipynb from all pipeline stage modules (Stages 0–6).
 Run: python generate_notebook.py
 """
 import nbformat as nbf
@@ -41,7 +41,11 @@ cells.append(code("""\
     bertopic sentence-transformers hdbscan \\
     chromadb \\
     dspy-ai \\
-    nltk pyyaml requests tqdm
+    nltk pyyaml requests tqdm \\
+    torch \\
+    ragas datasets \\
+    matplotlib seaborn \\
+    langchain-community langchain-ollama
 
 import nltk
 nltk.download('stopwords', quiet=True)
@@ -73,11 +77,15 @@ cells.append(md("### Global configuration"))
 
 cells.append(code("""\
 NORMALIZED_PARQUET = "/content/data/normalized.parquet"
+LABELED_PARQUET    = "/content/data/labeled.parquet"
 ANOMALIES_PARQUET  = "/content/data/anomalies.parquet"
 TOPICS_PARQUET     = "/content/data/anomalies_with_topics.parquet"
 CHROMA_DIR         = "/content/data/chroma_db"
 RESULTS_JSON       = "/content/data/llm_results.json"
 TOPIC_MODEL_DIR    = "/content/data/bertopic_model"
+METRICS_JSON       = "/content/data/metrics_report.json"
+LLM_METRICS_JSON   = "/content/data/llm_metrics.json"
+FIGURES_DIR        = "/content/data/figures"
 
 OLLAMA_MODEL       = "llama3"       # change model if needed
 CONTAMINATION      = 0.05           # fraction flagged as anomalous
@@ -86,6 +94,7 @@ EVENTS_PER_TOPIC   = 3              # worst anomalies per topic
 
 import os
 os.makedirs("/content/data", exist_ok=True)
+os.makedirs(FIGURES_DIR,    exist_ok=True)
 """))
 
 # ── STAGE 1 ──────────────────────────────────────────────────────────────────
@@ -102,6 +111,56 @@ df_norm = parse_stage(
     chunk_size = 50_000,
 )
 df_norm.head(3)
+"""))
+
+# ── STAGE 0 ──────────────────────────────────────────────────────────────────
+cells.append(md("""---
+## Stage 0 — Ground Truth Labeling
+
+Assigns a `ground_truth` label to every event in `normalized.parquet` using
+a **three-tier rule set** derived from the MITRE ATT&CK APT29 technique mapping:
+
+| Tier | Rule | Label |
+|---|---|---|
+| 1 — High confidence | EventID 10 targeting `lsass.exe`, EventID 13 writing to `\\Run\\` keys, etc. | `1` (Malicious) |
+| 2 — Heuristic | Known offensive tool image names (`mimikatz.exe`, `psexec.exe`, etc.) | `1` (Malicious) |
+| 3 — Default | All other events | `0` (Benign) |
+
+> The OTRF APT29 Mordor dataset is **semi-labeled by design** — both adversarial and
+> normal endpoint events are captured in the same file. No second dataset is needed.
+"""))
+
+cells.append(code(read_pipeline_module("stage0_label.py")))
+
+cells.append(code("""\
+df_labeled = label_stage(
+    normalized_path = NORMALIZED_PARQUET,
+    labeled_path    = LABELED_PARQUET,
+)
+"""))
+
+cells.append(code("""\
+import pandas as pd
+import plotly.express as px
+
+df_labeled = pd.read_parquet(LABELED_PARQUET)
+
+# Class distribution bar chart
+counts = df_labeled["ground_truth"].value_counts().rename({0: "Benign", 1: "Malicious"})
+fig = px.bar(
+    x=counts.index,
+    y=counts.values,
+    color=counts.index,
+    color_discrete_map={"Benign": "#00b4d8", "Malicious": "#e94560"},
+    title="Ground Truth Class Distribution (APT29 Mordor Dataset)",
+    labels={"x": "Class", "y": "Event Count"},
+    template="plotly_dark",
+    height=380,
+)
+fig.show()
+print(f"Total events   : {len(df_labeled):,}")
+print(f"Benign (0)     : {(df_labeled['ground_truth']==0).sum():,}")
+print(f"Malicious (1)  : {(df_labeled['ground_truth']==1).sum():,}")
 """))
 
 cells.append(code("""\
@@ -129,20 +188,30 @@ print(df_norm[['event_id','hostname','channel','severity','message_len']].descri
 
 # ── STAGE 2 ──────────────────────────────────────────────────────────────────
 cells.append(md("""---
-## Stage 2 — Anomaly Detection (Isolation Forest + UMAP)
+## Stage 2 — Comparative Anomaly Detection
 
-Trains an **Isolation Forest** on the engineered feature matrix (no labels needed).
-Events in the bottom `CONTAMINATION` percentile are flagged as anomalous.
-A UMAP 2-D projection is rendered as an interactive scatter plot.
+Runs **three independent unsupervised anomaly detectors** on the same feature matrix:
+
+| Model | Algorithm | Key Property |
+|---|---|---|
+| A | **Isolation Forest** | Ensemble tree-based; efficient on high-dimensional data |
+| B | **One-Class SVM** | Kernel-based; non-linear decision boundary |
+| C | **Deep Autoencoder** | Reconstruction-error; learns compact latent representation (GPU) |
+
+Each model produces its own anomaly score column. The **union** of all three flags
+forms the final anomaly set passed to downstream stages.
+
+> Ground truth labels (from Stage 0) are carried through but **not used** for training —
+> all models remain fully unsupervised. Labels are used only in Stage 5 evaluation.
 """))
 
 cells.append(code(read_pipeline_module("stage2_anomaly.py")))
 
 cells.append(code("""\
 anomalies_df = anomaly_stage(
-    normalized_path = NORMALIZED_PARQUET,
-    anomalies_path  = ANOMALIES_PARQUET,
-    contamination   = CONTAMINATION,
+    labeled_path   = LABELED_PARQUET,
+    anomalies_path = ANOMALIES_PARQUET,
+    contamination  = CONTAMINATION,
 )
 """))
 
@@ -151,12 +220,15 @@ import pandas as pd
 
 anomalies_df = pd.read_parquet(ANOMALIES_PARQUET)
 
-# Top anomalous event types
+# Top anomalous event types — all model scores
 top = (
     anomalies_df.groupby("event_id")
-    .agg(count=("event_id","size"),
-         avg_if_score=("anomaly_score","mean"),
-         unique_hosts=("hostname","nunique"))
+    .agg(
+        count=("event_id", "size"),
+        avg_if_score=("if_anomaly_score", "mean"),
+        avg_ae_score=("ae_anomaly_score", "mean"),
+        unique_hosts=("hostname", "nunique"),
+    )
     .sort_values("avg_if_score")
     .head(10)
 )
@@ -284,6 +356,110 @@ results = llm_analysis_stage(
 )
 """))
 
+# ── STAGE 5 ──────────────────────────────────────────────────────────────────
+cells.append(md("""---
+## Stage 5 — Quantitative ML Evaluation
+
+Compares the three anomaly detectors against the ground truth labels (Stage 0)
+using the following metrics:
+
+| Metric | Description |
+|---|---|
+| **ROC-AUC** | Threshold-free discrimination ability |
+| **PR-AUC** | Better than ROC-AUC for imbalanced security log data |
+| **F1-Score** | Harmonic mean of Precision and Recall at optimal threshold |
+| **Precision** | Fraction of flagged events that are actually malicious |
+| **Recall** | Fraction of malicious events that were caught |
+| **FPR** | False Positive Rate — the SOC analyst burden metric |
+
+Generates thesis-quality figures: ROC curves, PR curves, and confusion matrices.
+"""))
+
+cells.append(code(read_pipeline_module("stage5_evaluation.py")))
+
+cells.append(code("""\
+metrics_report = evaluation_stage(
+    anomalies_path = ANOMALIES_PARQUET,
+    figures_dir    = FIGURES_DIR,
+    metrics_path   = METRICS_JSON,
+)
+"""))
+
+cells.append(code("""\
+# Display metrics comparison table
+import json, pandas as pd
+from IPython.display import display, Image
+
+with open(METRICS_JSON) as f:
+    report = json.load(f)
+
+metrics_df = pd.DataFrame(report).T
+metrics_df.index.name = "Model"
+print("\\n── Evaluation Metrics Summary ──────────────────────────")
+display(metrics_df.style.background_gradient(cmap='RdYlGn', axis=0)
+        .format("{:.4f}"))
+
+# Show figures inline
+print("\\n── ROC Curves ──")
+display(Image(FIGURES_DIR + "/roc_curve_comparison.png"))
+print("\\n── Precision-Recall Curves ──")
+display(Image(FIGURES_DIR + "/pr_curve_comparison.png"))
+print("\\n── Confusion Matrices ──")
+display(Image(FIGURES_DIR + "/confusion_matrices.png"))
+"""))
+
+# ── STAGE 6 ──────────────────────────────────────────────────────────────────
+cells.append(md("""---
+## Stage 6 — LLM & RAG Evaluation (RAGAS)
+
+Evaluates the quality of the LLM threat analyses using the
+**RAGAS (Retrieval-Augmented Generation Assessment)** framework.
+
+Two conditions are compared:
+- **With RAG**: LLM answers generated using ChromaDB-retrieved context (MITRE ATT&CK, Sigma rules, etc.)
+- **Without RAG** (baseline): Same questions, same LLM, but **no context** provided
+
+| Metric | Interpretation |
+|---|---|
+| **Faithfulness** | Are claims grounded in retrieved docs? < 0.7 = hallucination |
+| **Answer Relevancy** | Is the response on-topic for the anomaly? |
+| **Context Precision** | Are the most useful RAG docs ranked highest? |
+| **Context Recall** | Did the retriever surface all necessary information? |
+
+> The Δ (delta) between with-RAG and without-RAG Faithfulness is the thesis's
+> key quantitative contribution on the LLM side.
+"""))
+
+cells.append(code(read_pipeline_module("stage6_llm_eval.py")))
+
+cells.append(code("""\
+llm_metrics = llm_eval_stage(
+    results_path = RESULTS_JSON,
+    metrics_path = LLM_METRICS_JSON,
+    figures_dir  = FIGURES_DIR,
+    model        = OLLAMA_MODEL,
+    max_samples  = 30,       # increase for more thorough evaluation
+)
+"""))
+
+cells.append(code("""\
+import json
+from IPython.display import display, Image
+
+with open(LLM_METRICS_JSON) as f:
+    llm_m = json.load(f)
+
+print("── RAGAS Results ───────────────────────────────────────")
+for condition in ["with_rag", "without_rag", "delta"]:
+    print(f"\\n  [{condition.upper()}]")
+    for k, v in llm_m[condition].items():
+        print(f"    {k:25s}: {v:.4f}")
+print("────────────────────────────────────────────────────────")
+
+display(Image(FIGURES_DIR + "/ragas_radar_chart.png"))
+display(Image(FIGURES_DIR + "/faithfulness_comparison.png"))
+"""))
+
 # ── RESULTS DASHBOARD ────────────────────────────────────────────────────────
 cells.append(md("""---
 ## Results Dashboard
@@ -370,11 +546,15 @@ All outputs saved to `/content/data/`:
 | File | Description |
 |---|---|
 | `normalized.parquet` | All ~1M events, flat schema |
-| `anomalies.parquet` | Anomalous events with IF scores |
-| `anomalies_with_topics.parquet` | Anomalies + BERTopic labels |
-| `chroma_db/` | Persistent vector store (5 collections) |
-| `bertopic_model/` | Saved BERTopic model |
-| `llm_results.json` | Structured LLM threat analysis per anomaly |
+| `labeled.parquet` | All events with `ground_truth` column (Stage 0) |
+| `anomalies.parquet` | Anomalies with IF / OCSVM / AE scores (Stage 2) |
+| `anomalies_with_topics.parquet` | Anomalies + BERTopic labels (Stage 3) |
+| `chroma_db/` | Persistent vector store — 5 KB collections (Stage 4a) |
+| `bertopic_model/` | Saved BERTopic model (Stage 3) |
+| `llm_results.json` | Structured LLM threat analysis per anomaly (Stage 4b) |
+| `metrics_report.json` | ROC-AUC / PR-AUC / F1 per model (Stage 5) |
+| `llm_metrics.json` | RAGAS scores with/without RAG (Stage 6) |
+| `figures/` | All thesis-ready PNG plots |
 """))
 
 # ─────────────────────────────────────────────────────────────────────────────
