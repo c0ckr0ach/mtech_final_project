@@ -29,15 +29,17 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from openai import OpenAI
 from datasets import Dataset
-from ragas import evaluate
+from ragas import evaluate, RunConfig
+from ragas.llms import llm_factory
+from ragas.embeddings import embedding_factory
 from ragas.metrics import (
     faithfulness,
     answer_relevancy,
     context_precision,
     context_recall,
 )
-import dspy
 
 RESULTS_JSON    = "/content/data/llm_results.json"
 LLM_METRICS_JSON = "/content/data/llm_metrics.json"
@@ -51,21 +53,18 @@ plt.style.use("dark_background")
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _configure_ragas_llm(model: str = OLLAMA_MODEL):
-    """Configure RAGAS to use the local Ollama LLM as the judge."""
-    import warnings
-    warnings.filterwarnings("ignore", category=DeprecationWarning)
-    
-    try:
-        from langchain_ollama import OllamaLLM, OllamaEmbeddings
-    except ImportError:
-        from langchain_community.llms import Ollama as OllamaLLM
-        from langchain_community.embeddings import OllamaEmbeddings
-
-    from ragas.llms import LangchainLLMWrapper
-    from ragas.embeddings import LangchainEmbeddingsWrapper
-
-    llm   = LangchainLLMWrapper(OllamaLLM(model=model, base_url=OLLAMA_BASE_URL))
-    emb   = LangchainEmbeddingsWrapper(OllamaEmbeddings(model=model, base_url=OLLAMA_BASE_URL))
+    """
+    Configure RAGAS LLM and embeddings using Ollama's OpenAI-compatible API.
+    This avoids the deprecated LangchainLLMWrapper entirely.
+    Ollama serves an OpenAI-compatible endpoint at /v1, so we point the
+    standard OpenAI client at it with api_key='ollama' (any string works).
+    """
+    ollama_client = OpenAI(
+        base_url=f"{OLLAMA_BASE_URL}/v1",
+        api_key="ollama",
+    )
+    llm = llm_factory(model=model, client=ollama_client)
+    emb = embedding_factory(model=model, client=ollama_client)
     return llm, emb
 
 
@@ -111,26 +110,33 @@ def _build_ragas_dataset(results: list[dict],
 
 
 def _run_ragas(dataset: Dataset, llm, emb) -> dict:
-    """Run RAGAS evaluation and return a dict of metric averages."""
+    """
+    Run RAGAS evaluation sequentially (max_workers=1) to avoid overwhelming
+    a local Ollama instance with concurrent requests, which causes TimeoutErrors.
+    Returns a dict of averaged metric scores.
+    """
+    run_cfg = RunConfig(
+        max_workers=1,    # sequential — critical for local Ollama
+        timeout=180,      # 3 min per call; llama3 on CPU can be slow
+        max_retries=2,
+    )
     result = evaluate(
         dataset,
         metrics=[faithfulness, answer_relevancy, context_precision, context_recall],
         llm=llm,
         embeddings=emb,
+        run_config=run_cfg,
         raise_exceptions=False,
     )
-    
-    # Ragas EvaluationResult does not have .items(). Convert to DataFrame to get means.
-    if hasattr(result, "to_pandas"):
-        df = result.to_pandas()
-        metrics = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
-        # .mean() safely ignores NaNs
-        means = df[metrics].mean(numeric_only=True).to_dict()
-        return {k: float(v) if pd.notna(v) else 0.0 for k, v in means.items()}
-    elif isinstance(result, dict):
-        return {k: float(v) for k, v in result.items()}
-    else:
-        return dict(result)
+
+    # RAGAS returns an EvaluationResult object (not a dict) — use to_pandas()
+    df      = result.to_pandas()
+    metric_cols = [c for c in
+                   ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+                   if c in df.columns]
+    means   = df[metric_cols].mean(numeric_only=True)
+    return {k: round(float(v), 4) if pd.notna(v) else 0.0
+            for k, v in means.items()}
 
 
 # ── Radar chart ───────────────────────────────────────────────────────────────
@@ -217,14 +223,16 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
                    metrics_path: str   = LLM_METRICS_JSON,
                    figures_dir: str    = FIGURES_DIR,
                    model: str          = OLLAMA_MODEL,
-                   max_samples: int    = 30) -> dict:
+                   max_samples: int    = 10) -> dict:
     """
     End-to-end Stage 6 entry point.
     Evaluates LLM analysis quality with and without RAG context using RAGAS.
 
     Args:
-        max_samples: Cap on entries evaluated (RAGAS calls LLM per-row; keep small
-                     for time/cost; 30 is sufficient for statistical reporting).
+        max_samples: Cap on entries evaluated. RAGAS makes multiple LLM calls
+                     per row (4 metrics × N rows), so keep this small for local
+                     Ollama. 10 samples = ~80 LLM calls, runtime ~15-30 min.
+                     Increase to 30 for the final thesis run.
     """
     os.makedirs(figures_dir, exist_ok=True)
 
