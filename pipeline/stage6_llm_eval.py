@@ -34,23 +34,9 @@ from datasets import Dataset
 from ragas import evaluate, RunConfig
 from ragas.llms import llm_factory
 
-# RAGAS v0.2+: metrics are classes that must be instantiated, not module singletons.
-# Import from the correct v0.2+ location.
-try:
-    from ragas.metrics.collections import (
-        Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
-    )
-    RAGAS_METRICS = [
-        Faithfulness(), AnswerRelevancy(), ContextPrecision(), ContextRecall()
-    ]
-    METRIC_COLS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
-except ImportError:
-    # Older ragas ≤ v0.1 — metrics were singletons
-    from ragas.metrics import (
-        faithfulness, answer_relevancy, context_precision, context_recall
-    )
-    RAGAS_METRICS = [faithfulness, answer_relevancy, context_precision, context_recall]
-    METRIC_COLS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+# RAGAS v0.2+: metrics are classes that must be instantiated with an LLM.
+# They are imported here but instantiated dynamically inside _run_ragas.
+METRIC_COLS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
 
 RESULTS_JSON    = "/content/data/llm_results.json"
 LLM_METRICS_JSON = "/content/data/llm_metrics.json"
@@ -137,9 +123,27 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
         timeout=180,      # 3 min per call; llama3 on GPU should be well within this
         max_retries=2,
     )
+    # Instantiate metrics with the LLM (required by RAGAS v0.2)
+    try:
+        from ragas.metrics.collections import (
+            Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+        )
+        metrics = [
+            Faithfulness(llm=llm),
+            AnswerRelevancy(llm=llm, embeddings=emb),
+            ContextPrecision(llm=llm),
+            ContextRecall(llm=llm)
+        ]
+    except ImportError:
+        # Fallback for older ragas versions
+        from ragas.metrics import (
+            faithfulness, answer_relevancy, context_precision, context_recall
+        )
+        metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+
     result = evaluate(
         dataset,
-        metrics=RAGAS_METRICS,   # pre-instantiated metric objects
+        metrics=metrics,
         llm=llm,
         embeddings=emb,
         run_config=run_cfg,
