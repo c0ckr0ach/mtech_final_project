@@ -29,17 +29,21 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from openai import OpenAI
 from datasets import Dataset
 from ragas import evaluate, RunConfig
-from ragas.llms import llm_factory
-from ragas.embeddings import embedding_factory
-from ragas.metrics import (
-    faithfulness,
-    answer_relevancy,
-    context_precision,
-    context_recall,
-)
+from ragas.llms import LangchainLLMWrapper
+from ragas.embeddings import LangchainEmbeddingsWrapper
+
+# Import from the correct v0.2+ location to avoid deprecation warnings
+try:
+    from ragas.metrics.collections import (
+        faithfulness, answer_relevancy, context_precision, context_recall
+    )
+except ImportError:
+    # Fallback for older ragas versions
+    from ragas.metrics import (
+        faithfulness, answer_relevancy, context_precision, context_recall
+    )
 
 RESULTS_JSON    = "/content/data/llm_results.json"
 LLM_METRICS_JSON = "/content/data/llm_metrics.json"
@@ -54,17 +58,24 @@ plt.style.use("dark_background")
 
 def _configure_ragas_llm(model: str = OLLAMA_MODEL):
     """
-    Configure RAGAS LLM and embeddings using Ollama's OpenAI-compatible API.
-    This avoids the deprecated LangchainLLMWrapper entirely.
-    Ollama serves an OpenAI-compatible endpoint at /v1, so we point the
-    standard OpenAI client at it with api_key='ollama' (any string works).
+    Configure RAGAS LLM and embeddings for local Ollama.
+
+    LLM  : ChatOllama via LangchainLLMWrapper.
+           ChatOllama is the correct (non-deprecated) class in langchain-ollama.
+    Emb  : HuggingFaceEmbeddings via LangchainEmbeddingsWrapper.
+           Uses `all-MiniLM-L6-v2` (already installed via sentence-transformers
+           in Stage 3), so no Ollama involvement for embeddings — faster and
+           avoids the `embed_query` AttributeError from RAGAS's embedding_factory.
     """
-    ollama_client = OpenAI(
-        base_url=f"{OLLAMA_BASE_URL}/v1",
-        api_key="ollama",
-    )
-    llm = llm_factory(model=model, client=ollama_client)
-    emb = embedding_factory(model=model, client=ollama_client)
+    from langchain_ollama import ChatOllama
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+
+    lc_llm = ChatOllama(model=model, base_url=OLLAMA_BASE_URL, temperature=0)
+    llm    = LangchainLLMWrapper(lc_llm)
+
+    lc_emb = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    emb    = LangchainEmbeddingsWrapper(lc_emb)
+
     return llm, emb
 
 
