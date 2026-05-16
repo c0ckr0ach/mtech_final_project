@@ -125,7 +125,7 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
     )
     # Instantiate metrics with the LLM (required by RAGAS v0.2)
     try:
-        from ragas.metrics.collections import (
+        from ragas.metrics import (
             Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
         )
         metrics = [
