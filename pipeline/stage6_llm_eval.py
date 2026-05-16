@@ -66,7 +66,7 @@ def _configure_ragas_llm(model: str = OLLAMA_MODEL):
         api_key="ollama",
     )
     llm = llm_factory(model=model, client=ollama_client)
-    emb = RagasHFEmbeddings(model_name="all-MiniLM-L6-v2")
+    emb = RagasHFEmbeddings(model="all-MiniLM-L6-v2")
 
     return llm, emb
 
