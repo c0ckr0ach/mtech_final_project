@@ -55,18 +55,18 @@ def _configure_ragas_llm(model: str = OLLAMA_MODEL):
 
     LLM : llm_factory pointed at Ollama's OpenAI-compatible /v1 endpoint.
           api_key can be any non-empty string; Ollama ignores it.
-    Emb : RAGAS's own HuggingFaceEmbeddings wrapper around all-MiniLM-L6-v2.
+    Emb : Langchain's HuggingFaceEmbeddings wrapper around all-MiniLM-L6-v2.
           sentence-transformers is already installed from Stage 3.
           This avoids routing embedding calls through Ollama entirely.
     """
-    from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
+    from langchain_community.embeddings import HuggingFaceEmbeddings as LangchainHFEmbeddings
 
     ollama_client = OpenAI(
         base_url=f"{OLLAMA_BASE_URL}/v1",
         api_key="ollama",
     )
     llm = llm_factory(model=model, client=ollama_client)
-    emb = RagasHFEmbeddings(model="all-MiniLM-L6-v2")
+    emb = LangchainHFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
     return llm, emb
 
