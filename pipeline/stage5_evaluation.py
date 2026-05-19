@@ -32,6 +32,7 @@ from sklearn.metrics import (
     confusion_matrix, f1_score, precision_score, recall_score,
 )
 
+LABELED_PARQUET    = "/content/data/labeled.parquet"
 ANOMALIES_PARQUET  = "/content/data/anomalies.parquet"
 FIGURES_DIR        = "/content/data/figures"
 METRICS_JSON       = "/content/data/metrics_report.json"
@@ -173,51 +174,113 @@ def plot_confusion_matrices(cms: dict, out_path: str):
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def evaluation_stage(anomalies_path: str = ANOMALIES_PARQUET,
+                     labeled_path: str   = LABELED_PARQUET,
                      figures_dir: str    = FIGURES_DIR,
                      metrics_path: str   = METRICS_JSON) -> dict:
     """
     End-to-end Stage 5 entry point.
-    Requires: anomalies.parquet with ground_truth, if_anomaly_score,
-              ocsvm_anomaly_score, ae_anomaly_score columns.
+
+    Evaluates on the **full labeled dataset** (196K events) rather than just
+    the anomaly subset.  This is the correct evaluation scope because:
+      - Ground truth labels exist for ALL 196K events (from Stage 0).
+      - The unsupervised models produce continuous scores for ALL events.
+      - Evaluating only on the flagged anomaly subset biases recall upward
+        and causes ROC-AUC < 0.5 when the subset misses most positives.
+
+    Strategy:
+      1. Load labeled.parquet (all events, ground_truth column present).
+      2. Load anomalies.parquet (flagged events with model scores).
+      3. Left-join model scores back onto labeled.parquet by row index.
+         Un-flagged events receive the least-anomalous fill value per model.
+      4. Compute ROC-AUC / PR-AUC / F1 over all 196K events.
     """
     os.makedirs(figures_dir, exist_ok=True)
 
-    print("Loading anomalies parquet …")
-    df = pd.read_parquet(anomalies_path)
-    print(f"    Shape: {df.shape}")
+    # ── Load full labeled dataset ──────────────────────────────────────────────
+    print("Loading full labeled parquet (all events) …")
+    df_full = pd.read_parquet(labeled_path)
+    df_full = df_full.reset_index(drop=True)   # ensure clean 0-based index
+    print(f"    Shape: {df_full.shape}")
 
-    if "ground_truth" not in df.columns:
+    if "ground_truth" not in df_full.columns:
         raise ValueError(
-            "ground_truth column not found. "
-            "Run stage0_label.py first, then re-run stage2_anomaly.py."
+            "ground_truth column not found in labeled.parquet. "
+            "Run stage0_label.py first."
         )
 
-    y_true = df["ground_truth"].values
-    print(f"    Positives in anomaly set: {y_true.sum():,} / {len(y_true):,}")
+    y_true = df_full["ground_truth"].values
+    print(f"    Total positives (full corpus): {y_true.sum():,} / {len(y_true):,}")
 
-    # Build score dict: {model_name: (score_array, config)}
+    # ── Merge model scores from anomaly subset ─────────────────────────────────
+    print("\nLoading anomaly scores from anomalies.parquet …")
+    df_anom = pd.read_parquet(anomalies_path).reset_index(drop=True)
+    print(f"    Anomaly set shape: {df_anom.shape}")
+    print(f"    Positives in anomaly set: {df_anom['ground_truth'].sum():,} / {len(df_anom):,}")
+
+    # Score columns produced by Stage 2
+    score_cols = [cfg["score_col"] for cfg in MODELS.values()]
+    flag_cols  = [cfg["flag_col"]  for cfg in MODELS.values()]
+    all_model_cols = score_cols + flag_cols
+
+    # Try merging by the original DataFrame index that Stage 2 preserved.
+    # Stage 2 saves a subset of df_full; if the parquet preserves the original
+    # integer index we can use it; otherwise fall back to an inner join on
+    # shared non-score columns.
+    merge_cols = [c for c in all_model_cols if c in df_anom.columns]
+    if "original_index" in df_anom.columns:
+        df_scores = df_anom.set_index("original_index")[merge_cols]
+        df_merged = df_full.join(df_scores, how="left")
+    else:
+        # Stage 2 resets the index but keeps all original feature columns.
+        # Use timestamp + event_id as a composite key for the join.
+        join_keys = ["timestamp", "event_id", "hostname", "process_id"]
+        join_keys = [k for k in join_keys if k in df_full.columns and k in df_anom.columns]
+        if join_keys:
+            df_merged = df_full.merge(
+                df_anom[[*join_keys, *merge_cols]].drop_duplicates(subset=join_keys),
+                on=join_keys, how="left"
+            )
+        else:
+            print("  WARNING: Cannot join by index or key — falling back to anomaly-subset evaluation.")
+            df_merged = df_anom  # degenerate fallback
+
+    # Fill un-flagged events with the most-benign score per model
+    for name, cfg in MODELS.items():
+        col = cfg["score_col"]
+        if col not in df_merged.columns:
+            continue
+        if cfg["negate"]:
+            # IF / OCSVM: lower score = more anomalous → fill missing with max (most benign)
+            df_merged[col] = df_merged[col].fillna(df_merged[col].max())
+        else:
+            # AE: higher score = more anomalous → fill missing with min (most benign)
+            df_merged[col] = df_merged[col].fillna(df_merged[col].min())
+
+    y_true_eval = df_merged["ground_truth"].values
+
+    # Build score dict for the full evaluation
     model_scores = {}
     for name, cfg in MODELS.items():
-        if cfg["score_col"] not in df.columns:
+        if cfg["score_col"] not in df_merged.columns:
             print(f"  Skipping {name} — column '{cfg['score_col']}' not found.")
             continue
-        raw   = df[cfg["score_col"]].fillna(0).values
+        raw   = df_merged[cfg["score_col"]].fillna(0).values
         score = -raw if cfg["negate"] else raw
         model_scores[name] = (score, cfg)
 
     if not model_scores:
-        raise ValueError("No model score columns found in anomalies.parquet.")
+        raise ValueError("No model score columns found.")
 
     # ── Compute all metrics ───────────────────────────────────────────────────
-    print("\n── Evaluation Metrics ─────────────────────────────────────")
+    print("\n── Evaluation Metrics (full 196K corpus) ──────────────────")
     report = {}
     cms    = {}
 
     for name, (score, cfg) in model_scores.items():
-        fpr_curve, tpr_curve, _ = roc_curve(y_true, score)
+        fpr_curve, tpr_curve, _ = roc_curve(y_true_eval, score)
         roc_auc = auc(fpr_curve, tpr_curve)
-        pr_auc  = average_precision_score(y_true, score)
-        opt     = _optimal_threshold_metrics(y_true, score)
+        pr_auc  = average_precision_score(y_true_eval, score)
+        opt     = _optimal_threshold_metrics(y_true_eval, score)
         cms[name] = opt["cm"]
 
         report[name] = {
@@ -227,6 +290,7 @@ def evaluation_stage(anomalies_path: str = ANOMALIES_PARQUET,
             "precision" : round(opt["precision"], 4),
             "recall"    : round(opt["recall"], 4),
             "fpr"       : round(opt["fpr"], 4),
+            "eval_scope": "full_corpus",
         }
 
         print(f"\n  {name}")
@@ -241,9 +305,9 @@ def evaluation_stage(anomalies_path: str = ANOMALIES_PARQUET,
 
     # ── Generate figures ──────────────────────────────────────────────────────
     print("\n── Generating figures ─────────────────────────────────────")
-    plot_roc_curves(y_true, model_scores,
+    plot_roc_curves(y_true_eval, model_scores,
                     os.path.join(figures_dir, "roc_curve_comparison.png"))
-    plot_pr_curves(y_true, model_scores,
+    plot_pr_curves(y_true_eval, model_scores,
                    os.path.join(figures_dir, "pr_curve_comparison.png"))
     plot_confusion_matrices(cms,
                             os.path.join(figures_dir, "confusion_matrices.png"))

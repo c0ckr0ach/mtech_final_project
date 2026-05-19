@@ -205,6 +205,7 @@ def run_umap(X_scaled: np.ndarray, df: pd.DataFrame,
     reducer = umap.UMAP(
         n_components=2, n_neighbors=15, min_dist=0.1,
         metric="euclidean", random_state=RANDOM_STATE, low_memory=True,
+        init="random",   # avoid spectral init failures on high-cardinality data
     )
     emb = reducer.fit_transform(X_scaled[idx])
 

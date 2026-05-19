@@ -96,9 +96,18 @@ def _build_ragas_dataset(results: list[dict],
             f"Remediation: {r.get('remediation_steps', '')}\n"
             f"Severity: {r.get('severity_rating', '')}"
         )
-        # For the no-RAG baseline, replace context with empty string
-        context_text = r.get("retrieved_docs", "") if not no_rag else ""
-        contexts = [context_text] if context_text else ["No context provided."]
+        # For the no-RAG baseline, replace context with a fixed placeholder
+        # that contains no real threat intel.  An *empty* list breaks RAGAS
+        # (it requires at least one context string), so we use a single
+        # content-free string that cannot greedily match any LLM claim.
+        if no_rag:
+            contexts = ["[No retrieval context provided — baseline condition.]"
+                        " This string intentionally contains no threat-intel information."]
+        else:
+            context_text = r.get("retrieved_docs", "")
+            contexts = [context_text] if context_text else [
+                "[Retrieved context was empty for this entry.]"
+            ]
 
         # Ground truth: use MITRE technique as a minimal reference
         ground_truth = r.get("mitre_technique", "Unknown technique")
@@ -127,14 +136,30 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
     # n_adaptations=1 is critical for local Ollama: the default of 3 means
     # RAGAS requests 3 parallel generations per call, which Ollama cannot
     # satisfy, causing a silent retry-spiral that stalls the progress bar.
+    # Use a graceful factory so the code works across RAGAS patch versions that
+    # may not yet expose n_adaptations on every metric class.
     from ragas.metrics.collections import (
         Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
     )
+
+    def _make_metric(cls, **kw):
+        """Construct a RAGAS metric, gracefully dropping unknown kwargs."""
+        try:
+            return cls(**kw)
+        except TypeError:
+            for drop in ["n_adaptations", "embeddings"]:
+                kw.pop(drop, None)
+                try:
+                    return cls(**kw)
+                except TypeError:
+                    pass
+            return cls(llm=kw["llm"])  # absolute fallback
+
     metrics = [
-        Faithfulness(llm=llm, n_adaptations=1),
-        AnswerRelevancy(llm=llm, embeddings=emb, n_adaptations=1),
-        ContextPrecision(llm=llm, n_adaptations=1),
-        ContextRecall(llm=llm, n_adaptations=1),
+        _make_metric(Faithfulness,     llm=llm, n_adaptations=1),
+        _make_metric(AnswerRelevancy,  llm=llm, embeddings=emb, n_adaptations=1),
+        _make_metric(ContextPrecision, llm=llm, n_adaptations=1),
+        _make_metric(ContextRecall,    llm=llm, n_adaptations=1),
     ]
 
     result = evaluate(
@@ -266,12 +291,17 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
     # ── WITH RAG ─────────────────────────────────────────────────────────────
     print("\n── Evaluating WITH RAG context ────────────────────────────")
     ds_with  = _build_ragas_dataset(results, no_rag=False)
+    # Sanity-check: confirm the two datasets differ
+    _ctx_with = ds_with[0]["contexts"][0][:80] if len(ds_with) else ""
+    print(f"  [WITH RAG]  sample context prefix: {_ctx_with!r}")
     scores_with = _run_ragas(ds_with, llm, emb)
     print("  Scores:", {k: f"{v:.4f}" for k, v in scores_with.items()})
 
     # ── WITHOUT RAG baseline ──────────────────────────────────────────────────
     print("\n── Evaluating WITHOUT RAG (baseline) ──────────────────────")
     ds_without  = _build_ragas_dataset(results, no_rag=True)
+    _ctx_without = ds_without[0]["contexts"][0][:80] if len(ds_without) else ""
+    print(f"  [WITHOUT RAG] sample context prefix: {_ctx_without!r}")
     scores_without = _run_ragas(ds_without, llm, emb)
     print("  Scores:", {k: f"{v:.4f}" for k, v in scores_without.items()})
 

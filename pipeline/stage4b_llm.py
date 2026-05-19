@@ -146,19 +146,42 @@ FEW_SHOT_EXAMPLES = [
 ]
 
 
+def _bootstrap_metric(example, pred, trace=None):
+    """Non-empty-output metric for BootstrapFewShot — must be a module-level
+    function (not a lambda / closure) so DSPy can pickle it correctly."""
+    return (
+        bool(getattr(pred, "threat_analysis", "")) and
+        bool(getattr(pred, "mitre_technique", "")) and
+        bool(getattr(pred, "remediation_steps", ""))
+    )
+
+
 def optimize_analyzer(analyzer: SecurityAnalyzer,
                       examples: list = FEW_SHOT_EXAMPLES) -> SecurityAnalyzer:
-    """Run BootstrapFewShot to auto-select best prompts."""
-    print("  Running DSPy BootstrapFewShot optimisation...")
-    optimizer = dspy.BootstrapFewShot(max_bootstrapped_demos=2,
-                                      max_labeled_demos=2)
-    # Metric: response is non-empty (adjust with a real eval if labels exist)
-    def metric(example, pred, trace=None):
-        return (bool(pred.threat_analysis) and
-                bool(pred.mitre_technique) and
-                bool(pred.remediation_steps))
+    """Run BootstrapFewShot to auto-select best prompts.
 
-    optimized = optimizer.compile(analyzer, trainset=examples, metric=metric)
+    DSPy API note: in DSPy >=2.4 the metric is passed to the *constructor*,
+    not to compile().  We support both call conventions so the code works
+    across DSPy versions.
+    """
+    print("  Running DSPy BootstrapFewShot optimisation...")
+    try:
+        # DSPy >= 2.4 — metric goes to the constructor
+        optimizer = dspy.BootstrapFewShot(
+            metric=_bootstrap_metric,
+            max_bootstrapped_demos=2,
+            max_labeled_demos=2,
+        )
+        optimized = optimizer.compile(analyzer, trainset=examples)
+    except TypeError:
+        # Fallback for older DSPy — metric goes to compile()
+        optimizer = dspy.BootstrapFewShot(
+            max_bootstrapped_demos=2,
+            max_labeled_demos=2,
+        )
+        optimized = optimizer.compile(
+            analyzer, trainset=examples, metric=_bootstrap_metric
+        )
     print("  Optimisation complete.")
     return optimized
 
@@ -260,6 +283,7 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
                     "event_id"         : int(row["event_id"]),
                     "hostname"         : row["hostname"],
                     "anomaly_score"    : float(row.get("anomaly_score", 0)),
+                    "retrieved_docs"   : docs,  # stored for Stage 6 RAG vs no-RAG eval
                     "threat_analysis"  : pred.threat_analysis,
                     "mitre_technique"  : pred.mitre_technique,
                     "remediation_steps": pred.remediation_steps,
