@@ -60,6 +60,7 @@ def _configure_ragas_llm(model: str = OLLAMA_MODEL):
           This avoids routing embedding calls through Ollama entirely.
     """
     from langchain_huggingface import HuggingFaceEmbeddings as LangchainHFEmbeddings
+    from ragas.embeddings import LangchainEmbeddingsWrapper
 
     ollama_client = OpenAI(
         base_url=f"{OLLAMA_BASE_URL}/v1",
@@ -67,8 +68,11 @@ def _configure_ragas_llm(model: str = OLLAMA_MODEL):
     )
     llm = llm_factory(model=model, client=ollama_client)
     emb = LangchainHFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+    
+    # Wrap in LangchainEmbeddingsWrapper for RAGAS v0.2 compatibility
+    wrapped_emb = LangchainEmbeddingsWrapper(emb)
 
-    return llm, emb
+    return llm, wrapped_emb
 
 
 def _build_ragas_dataset(results: list[dict],
