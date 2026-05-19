@@ -45,7 +45,7 @@ cells.append(code("""\
     torch \\
     ragas datasets \\
     matplotlib seaborn \\
-    langchain-community langchain-ollama
+    langchain-community langchain-ollama langchain-huggingface
 
 import nltk
 nltk.download('stopwords', quiet=True)
@@ -438,7 +438,7 @@ llm_metrics = llm_eval_stage(
     metrics_path = LLM_METRICS_JSON,
     figures_dir  = FIGURES_DIR,
     model        = OLLAMA_MODEL,
-    max_samples  = 30,       # increase for more thorough evaluation
+    max_samples  = 10,       # 10 samples = ~80 Ollama calls; ~60–90 min on GPU
 )
 """))
 

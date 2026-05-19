@@ -59,7 +59,7 @@ def _configure_ragas_llm(model: str = OLLAMA_MODEL):
           sentence-transformers is already installed from Stage 3.
           This avoids routing embedding calls through Ollama entirely.
     """
-    from langchain_community.embeddings import HuggingFaceEmbeddings as LangchainHFEmbeddings
+    from langchain_huggingface import HuggingFaceEmbeddings as LangchainHFEmbeddings
 
     ollama_client = OpenAI(
         base_url=f"{OLLAMA_BASE_URL}/v1",
@@ -120,26 +120,22 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
     """
     run_cfg = RunConfig(
         max_workers=1,    # sequential — critical for local Ollama
-        timeout=180,      # 3 min per call; llama3 on GPU should be well within this
-        max_retries=2,
+        timeout=90,       # 90 s per call — fail fast instead of stalling forever
+        max_retries=1,    # no retry spiral; if it fails once, move on
     )
-    # Instantiate metrics with the LLM (required by RAGAS v0.2)
-    try:
-        from ragas.metrics import (
-            Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
-        )
-        metrics = [
-            Faithfulness(llm=llm),
-            AnswerRelevancy(llm=llm, embeddings=emb),
-            ContextPrecision(llm=llm),
-            ContextRecall(llm=llm)
-        ]
-    except ImportError:
-        # Fallback for older ragas versions
-        from ragas.metrics import (
-            faithfulness, answer_relevancy, context_precision, context_recall
-        )
-        metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+    # Instantiate metrics with the LLM (required by RAGAS v0.2).
+    # n_adaptations=1 is critical for local Ollama: the default of 3 means
+    # RAGAS requests 3 parallel generations per call, which Ollama cannot
+    # satisfy, causing a silent retry-spiral that stalls the progress bar.
+    from ragas.metrics.collections import (
+        Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+    )
+    metrics = [
+        Faithfulness(llm=llm, n_adaptations=1),
+        AnswerRelevancy(llm=llm, embeddings=emb, n_adaptations=1),
+        ContextPrecision(llm=llm, n_adaptations=1),
+        ContextRecall(llm=llm, n_adaptations=1),
+    ]
 
     result = evaluate(
         dataset,
@@ -241,7 +237,7 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
                    metrics_path: str   = LLM_METRICS_JSON,
                    figures_dir: str    = FIGURES_DIR,
                    model: str          = OLLAMA_MODEL,
-                   max_samples: int    = 10) -> dict:
+                   max_samples: int    = 10) -> dict:  # 10 = ~80 Ollama calls; ~60–90 min on GPU
     """
     End-to-end Stage 6 entry point.
     Evaluates LLM analysis quality with and without RAG context using RAGAS.

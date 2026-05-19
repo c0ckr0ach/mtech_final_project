@@ -25,3 +25,4 @@ datasets
 matplotlib
 seaborn
 langchain-ollama
+langchain-huggingface
