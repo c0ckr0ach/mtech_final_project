@@ -55,24 +55,21 @@ def _configure_ragas_llm(model: str = OLLAMA_MODEL):
 
     LLM : llm_factory pointed at Ollama's OpenAI-compatible /v1 endpoint.
           api_key can be any non-empty string; Ollama ignores it.
-    Emb : Langchain's HuggingFaceEmbeddings wrapper around all-MiniLM-L6-v2.
-          sentence-transformers is already installed from Stage 3.
-          This avoids routing embedding calls through Ollama entirely.
+    Emb : RAGAS native HuggingFaceEmbeddings (ragas.embeddings) wrapping
+          all-MiniLM-L6-v2. This is the "modern" embedding type required by
+          RAGAS collections metrics (Faithfulness, AnswerRelevancy, etc.).
+          The deprecated LangchainEmbeddingsWrapper is no longer accepted.
     """
-    from langchain_huggingface import HuggingFaceEmbeddings as LangchainHFEmbeddings
-    from ragas.embeddings import LangchainEmbeddingsWrapper
+    from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
 
     ollama_client = OpenAI(
         base_url=f"{OLLAMA_BASE_URL}/v1",
         api_key="ollama",
     )
     llm = llm_factory(model=model, client=ollama_client)
-    emb = LangchainHFEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-    
-    # Wrap in LangchainEmbeddingsWrapper for RAGAS v0.2 compatibility
-    wrapped_emb = LangchainEmbeddingsWrapper(emb)
+    emb = RagasHFEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2")
 
-    return llm, wrapped_emb
+    return llm, emb
 
 
 def _build_ragas_dataset(results: list[dict],
@@ -170,7 +167,6 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
         dataset,
         metrics=metrics,
         llm=llm,
-        embeddings=emb,
         run_config=run_cfg,
         raise_exceptions=False,
     )
