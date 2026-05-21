@@ -17,7 +17,7 @@ except ImportError:
 # ── Config ────────────────────────────────────────────────────────────────────
 TOPICS_PARQUET  = "/content/data/anomalies_with_topics.parquet"
 RESULTS_JSON    = "/content/data/llm_results.json"
-OLLAMA_MODEL    = "llama3"           # swap to mistral / phi3 if preferred
+OLLAMA_MODEL    = "mistral:7b"           # swap to mistral / phi3 if preferred
 OLLAMA_BASE_URL = "http://localhost:11434"
 TOP_N_TOPICS    = 12                 # topics to analyse
 EVENTS_PER_TOPIC = 3                 # worst-scoring events per topic

@@ -139,7 +139,7 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
     # satisfy, causing a silent retry-spiral that stalls the progress bar.
     # Use a graceful factory so the code works across RAGAS patch versions that
     # may not yet expose n_adaptations on every metric class.
-    from ragas.metrics.collections import (
+    from ragas.metrics import (
         Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
     )
 
