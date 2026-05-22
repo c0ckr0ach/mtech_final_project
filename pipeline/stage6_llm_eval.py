@@ -35,7 +35,15 @@ import matplotlib.pyplot as plt
 from openai import OpenAI
 from datasets import Dataset
 from ragas import evaluate, RunConfig
-from ragas.llms import llm_factory
+
+# RAGAS v0.2+ canonical LLM setup:
+#   LangchainLLMWrapper(ChatOpenAI(...)) is the correct LLM type that RAGAS's
+#   isinstance(m, Metric) check and metric constructors expect.
+#   Using llm_factory(model, client=OpenAI(...)) produces a wrapper that passes
+#   Python's type() but is not recognized by RAGAS's internal Langchain callback
+#   protocol, causing the "All metrics must be initialised metric objects" TypeError.
+from langchain_openai import ChatOpenAI
+from ragas.llms import LangchainLLMWrapper
 
 # RAGAS v0.2+: metrics are classes that must be instantiated with an LLM.
 # They are imported here but instantiated dynamically inside _run_ragas.
@@ -59,13 +67,15 @@ plt.style.use("dark_background")
 def _configure_ragas_llm(model: str = MISTRAL_MODEL,
                          api_key: str = None):
     """
-    Configure RAGAS LLM judge using the Mistral API via an OpenAI-compatible
-    client (works with LiteLLM routing or direct Mistral endpoint).
+    Configure RAGAS LLM judge using the Mistral API.
 
-    LLM : llm_factory pointed at https://api.mistral.ai/v1 with the Mistral
-          API key.  RAGAS treats it identically to an OpenAI client.
-    Emb : RAGAS native HuggingFaceEmbeddings (ragas.embeddings) wrapping
-          all-MiniLM-L6-v2.  Kept local to avoid additional API costs.
+    LLM : LangchainLLMWrapper(ChatOpenAI(...)) — the canonical RAGAS v0.2+
+          LLM type. ChatOpenAI's base_url is pointed at Mistral's
+          OpenAI-compatible endpoint. This is the only wrapper type that RAGAS
+          metrics accept; passing a raw openai.OpenAI client via llm_factory
+          causes a TypeError at evaluate() time.
+    Emb : RAGAS native HuggingFaceEmbeddings (all-MiniLM-L6-v2) kept local
+          to avoid additional API costs.
     """
     import os
     from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
@@ -77,14 +87,15 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
             "Set the MISTRAL_API_KEY environment variable or pass api_key= directly."
         )
 
-    mistral_client = OpenAI(
+    chat_model = ChatOpenAI(
+        model=model,
         base_url=MISTRAL_API_BASE,
         api_key=key,
     )
-    llm = llm_factory(model=model, client=mistral_client)
+    llm = LangchainLLMWrapper(chat_model)
     emb = RagasHFEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2")
 
-    print(f"  RAGAS LLM judge → Mistral API ({model})")
+    print(f"  RAGAS LLM judge → Mistral API ({model}) via LangchainLLMWrapper")
     return llm, emb
 
 
@@ -164,12 +175,10 @@ def _run_ragas(dataset, llm, emb) -> dict:
         timeout=120,      # 120 s per call — allow for API round-trip latency
         max_retries=2,    # allow one retry on transient API errors
     )
-    # Instantiate metrics with the LLM (required by RAGAS v0.2).
-    # n_adaptations=1 is critical for local Ollama: the default of 3 means
-    # RAGAS requests 3 parallel generations per call, which Ollama cannot
-    # satisfy, causing a silent retry-spiral that stalls the progress bar.
-    # Use a graceful factory so the code works across RAGAS patch versions that
-    # may not yet expose n_adaptations on every metric class.
+    # ── Metric instantiation (RAGAS v0.2+) ───────────────────────────────────
+    # With a proper LangchainLLMWrapper LLM, metrics accept llm= directly.
+    # We still use a graceful factory to handle minor API differences across
+    # RAGAS patch versions (some classes don't expose embeddings= on all metrics).
     try:
         from ragas.metrics.collections import (
             Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
@@ -180,23 +189,23 @@ def _run_ragas(dataset, llm, emb) -> dict:
         )
 
     def _make_metric(cls, **kw):
-        """Construct a RAGAS metric, gracefully dropping unknown kwargs."""
+        """Construct a RAGAS metric, gracefully dropping unsupported kwargs."""
         try:
             return cls(**kw)
         except TypeError:
-            for drop in ["n_adaptations", "embeddings"]:
-                kw.pop(drop, None)
-                try:
-                    return cls(**kw)
-                except TypeError:
-                    pass
-            return cls(llm=kw["llm"])  # absolute fallback
+            # Drop embeddings= first (only AnswerRelevancy uses it)
+            kw.pop("embeddings", None)
+            try:
+                return cls(**kw)
+            except TypeError:
+                # Absolute fallback: llm= only
+                return cls(llm=kw["llm"])
 
     metrics = [
-        _make_metric(Faithfulness,     llm=llm, n_adaptations=1),
-        _make_metric(AnswerRelevancy,  llm=llm, embeddings=emb, n_adaptations=1),
-        _make_metric(ContextPrecision, llm=llm, n_adaptations=1),
-        _make_metric(ContextRecall,    llm=llm, n_adaptations=1),
+        _make_metric(Faithfulness,     llm=llm),
+        _make_metric(AnswerRelevancy,  llm=llm, embeddings=emb),
+        _make_metric(ContextPrecision, llm=llm),
+        _make_metric(ContextRecall,    llm=llm),
     ]
 
     result = evaluate(
