@@ -73,16 +73,10 @@ def _configure_ragas_llm(model: str = OLLAMA_MODEL):
 
 
 def _build_ragas_dataset(results: list[dict],
-                         no_rag: bool = False) -> Dataset:
+                         no_rag: bool = False):
     """
-    Convert llm_results.json entries into a HuggingFace Dataset
-    in the format expected by RAGAS.
-
-    RAGAS expects columns:
-        question   : str          — the question/prompt
-        answer     : str          — the LLM's generated answer
-        contexts   : list[str]    — the retrieved passages used
-        ground_truth: str         — reference answer (optional for some metrics)
+    Convert llm_results.json entries into an EvaluationDataset (RAGAS v0.2+)
+    or fallback to a HuggingFace Dataset.
     """
     rows = []
     for r in results:
@@ -97,10 +91,6 @@ def _build_ragas_dataset(results: list[dict],
             f"Remediation: {r.get('remediation_steps', '')}\n"
             f"Severity: {r.get('severity_rating', '')}"
         )
-        # For the no-RAG baseline, replace context with a fixed placeholder
-        # that contains no real threat intel.  An *empty* list breaks RAGAS
-        # (it requires at least one context string), so we use a single
-        # content-free string that cannot greedily match any LLM claim.
         if no_rag:
             contexts = ["[No retrieval context provided — baseline condition.]"
                         " This string intentionally contains no threat-intel information."]
@@ -110,24 +100,48 @@ def _build_ragas_dataset(results: list[dict],
                 "[Retrieved context was empty for this entry.]"
             ]
 
-        # Ground truth: use MITRE technique as a minimal reference
         ground_truth = r.get("mitre_technique", "Unknown technique")
 
         rows.append({
-            "question"    : question,
-            "answer"      : answer,
-            "contexts"    : contexts,
+            "user_input": question,
+            "response": answer,
+            "retrieved_contexts": contexts,
+            "reference": ground_truth,
+            # Fallback legacy columns for compatibility
+            "question": question,
+            "answer": answer,
+            "contexts": contexts,
             "ground_truth": ground_truth,
         })
-    return Dataset.from_list(rows)
+
+    try:
+        from ragas import SingleTurnSample, EvaluationDataset
+        samples = [
+            SingleTurnSample(
+                user_input=row["user_input"],
+                response=row["response"],
+                retrieved_contexts=row["retrieved_contexts"],
+                reference=row["reference"],
+            )
+            for row in rows
+        ]
+        return EvaluationDataset(samples=samples)
+    except ImportError:
+        from datasets import Dataset
+        return Dataset.from_list(rows)
 
 
-def _run_ragas(dataset: Dataset, llm, emb) -> dict:
+
+def _run_ragas(dataset, llm, emb) -> dict:
     """
     Run RAGAS evaluation sequentially (max_workers=1) to avoid overwhelming
     a local Ollama instance with concurrent requests, which causes TimeoutErrors.
     Returns a dict of averaged metric scores.
     """
+    if len(dataset) == 0:
+        print("  [WARNING] Evaluation dataset is empty. Skipping RAGAS evaluation and returning zero scores.")
+        return {k: 0.0 for k in METRIC_COLS}
+
     run_cfg = RunConfig(
         max_workers=1,    # sequential — critical for local Ollama
         timeout=90,       # 90 s per call — fail fast instead of stalling forever
@@ -139,9 +153,14 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
     # satisfy, causing a silent retry-spiral that stalls the progress bar.
     # Use a graceful factory so the code works across RAGAS patch versions that
     # may not yet expose n_adaptations on every metric class.
-    from ragas.metrics import (
-        Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
-    )
+    try:
+        from ragas.metrics.collections import (
+            Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+        )
+    except ImportError:
+        from ragas.metrics import (
+            Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+        )
 
     def _make_metric(cls, **kw):
         """Construct a RAGAS metric, gracefully dropping unknown kwargs."""
@@ -176,6 +195,7 @@ def _run_ragas(dataset: Dataset, llm, emb) -> dict:
     cols = [c for c in METRIC_COLS if c in df.columns]
     return {k: round(float(v), 4) if pd.notna(v) else 0.0
             for k, v in df[cols].mean(numeric_only=True).items()}
+
 
 
 # ── Radar chart ───────────────────────────────────────────────────────────────
@@ -279,6 +299,23 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
     with open(results_path, "r", encoding="utf-8") as f:
         results = json.load(f)
 
+    # Handle empty results gracefully to prevent downstream crashes in Ragas/Matplotlib
+    if not results:
+        print(f"\n  [WARNING] No results found in {results_path}!")
+        print("            Please ensure Stage 4b (LLM Analysis) completed successfully and generated threat analyses.")
+        scores_empty = {k: 0.0 for k in METRIC_COLS}
+        delta_empty = {k: 0.0 for k in METRIC_COLS}
+        output = {
+            "with_rag"   : scores_empty,
+            "without_rag": scores_empty,
+            "delta"      : delta_empty,
+            "n_samples"  : 0,
+        }
+        with open(metrics_path, "w", encoding="utf-8") as f:
+            json.dump(output, f, indent=2)
+        print(f"  Empty LLM metrics report saved to {metrics_path}")
+        return output
+
     # Subsample for evaluation speed
     if len(results) > max_samples:
         rng     = np.random.default_rng(42)
@@ -292,7 +329,13 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
     print("\n── Evaluating WITH RAG context ────────────────────────────")
     ds_with  = _build_ragas_dataset(results, no_rag=False)
     # Sanity-check: confirm the two datasets differ
-    _ctx_with = ds_with[0]["contexts"][0][:80] if len(ds_with) else ""
+    if len(ds_with) > 0:
+        if hasattr(ds_with, "samples"):
+            _ctx_with = ds_with.samples[0].retrieved_contexts[0][:80]
+        else:
+            _ctx_with = ds_with[0].get("contexts", ds_with[0].get("retrieved_contexts", [""]))[0][:80]
+    else:
+        _ctx_with = ""
     print(f"  [WITH RAG]  sample context prefix: {_ctx_with!r}")
     scores_with = _run_ragas(ds_with, llm, emb)
     print("  Scores:", {k: f"{v:.4f}" for k, v in scores_with.items()})
@@ -300,7 +343,13 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
     # ── WITHOUT RAG baseline ──────────────────────────────────────────────────
     print("\n── Evaluating WITHOUT RAG (baseline) ──────────────────────")
     ds_without  = _build_ragas_dataset(results, no_rag=True)
-    _ctx_without = ds_without[0]["contexts"][0][:80] if len(ds_without) else ""
+    if len(ds_without) > 0:
+        if hasattr(ds_without, "samples"):
+            _ctx_without = ds_without.samples[0].retrieved_contexts[0][:80]
+        else:
+            _ctx_without = ds_without[0].get("contexts", ds_without[0].get("retrieved_contexts", [""]))[0][:80]
+    else:
+        _ctx_without = ""
     print(f"  [WITHOUT RAG] sample context prefix: {_ctx_without!r}")
     scores_without = _run_ragas(ds_without, llm, emb)
     print("  Scores:", {k: f"{v:.4f}" for k, v in scores_without.items()})
