@@ -45,7 +45,8 @@ cells.append(code("""\
     torch \\
     ragas datasets \\
     matplotlib seaborn \\
-    langchain-community langchain-ollama langchain-huggingface
+    langchain-community langchain-ollama langchain-huggingface \\
+    litellm openai
 
 import nltk
 nltk.download('stopwords', quiet=True)
@@ -87,7 +88,11 @@ METRICS_JSON       = "/content/data/metrics_report.json"
 LLM_METRICS_JSON   = "/content/data/llm_metrics.json"
 FIGURES_DIR        = "/content/data/figures"
 
-OLLAMA_MODEL       = "llama3"       # change model if needed
+# Stage 4b — local Ollama model for threat analysis
+OLLAMA_MODEL       = "llama3"
+# Stage 6 — Mistral API model used as RAGAS LLM judge
+MISTRAL_MODEL      = "mistral-large-latest"  # swap to mistral-small-latest for dev runs
+
 CONTAMINATION      = 0.05           # fraction flagged as anomalous
 TOP_N_TOPICS       = 12             # topics passed to LLM
 EVENTS_PER_TOPIC   = 3              # worst anomalies per topic
@@ -316,7 +321,7 @@ cells.append(md("""---
 """))
 
 cells.append(code("""\
-# Install Ollama
+# Install Ollama (used by Stage 4b for local llama3 inference)
 !sudo apt-get install -y zstd
 !curl -fsSL https://ollama.com/install.sh | sh
 
@@ -326,7 +331,7 @@ import time
 subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 time.sleep(4)
 
-# Pull the model (you will see the progress bar here!)
+# Pull llama3 (~4.7 GB — takes 3–6 min on Colab)
 !ollama pull llama3
 """))
 
@@ -433,12 +438,34 @@ Two conditions are compared:
 cells.append(code(read_pipeline_module("stage6_llm_eval.py")))
 
 cells.append(code("""\
+# ── Mistral API key setup (Stage 6) ─────────────────────────────────────────
+# The key is stored as a Colab secret named MISTRAL_API_KEY.
+# To add it: click the 🔑 (Secrets) icon in the left sidebar → New secret.
+import os
+try:
+    from google.colab import userdata
+    MISTRAL_API_KEY = userdata.get("MISTRAL_API_KEY")
+except Exception:
+    # Fallback: read from environment if already set (e.g. local run)
+    MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+if not MISTRAL_API_KEY:
+    raise ValueError(
+        "MISTRAL_API_KEY is not set. "
+        "Add it as a Colab secret named MISTRAL_API_KEY (the 🔑 icon in the sidebar)."
+    )
+os.environ["MISTRAL_API_KEY"] = MISTRAL_API_KEY
+print("Mistral API key loaded ✔")
+"""))
+
+cells.append(code("""\
 llm_metrics = llm_eval_stage(
     results_path = RESULTS_JSON,
     metrics_path = LLM_METRICS_JSON,
     figures_dir  = FIGURES_DIR,
-    model        = OLLAMA_MODEL,
-    max_samples  = 10,       # 10 samples = ~80 Ollama calls; ~60–90 min on GPU
+    model        = MISTRAL_MODEL,        # mistral-large-latest via Mistral API
+    api_key      = MISTRAL_API_KEY,
+    max_samples  = 10,   # 10 samples ≈ 80 API calls; ~5–15 min via Mistral API
+                         # increase to 30 for the final thesis run
 )
 """))
 

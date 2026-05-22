@@ -1,7 +1,9 @@
 """
-Stage 4b: LLM Analysis — DSPy + Ollama
+Stage 4b: LLM Analysis — DSPy + Ollama (llama3)
 Defines the DSPy signature, ChainOfThought module, and BootstrapFewShot
 optimizer. Runs threat analysis on the top anomalous events per BERTopic cluster.
+
+Model: llama3 (local via Ollama at http://localhost:11434).
 """
 import os, json
 import pandas as pd
@@ -17,7 +19,7 @@ except ImportError:
 # ── Config ────────────────────────────────────────────────────────────────────
 TOPICS_PARQUET  = "/content/data/anomalies_with_topics.parquet"
 RESULTS_JSON    = "/content/data/llm_results.json"
-OLLAMA_MODEL    = "mistral:7b"           # swap to mistral / phi3 if preferred
+OLLAMA_MODEL    = "llama3"               # local Ollama model used for threat analysis
 OLLAMA_BASE_URL = "http://localhost:11434"
 TOP_N_TOPICS    = 12                 # topics to analyse
 EVENTS_PER_TOPIC = 3                 # worst-scoring events per topic

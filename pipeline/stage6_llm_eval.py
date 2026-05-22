@@ -3,6 +3,9 @@ Stage 6: LLM & RAG Evaluation — RAGAS Framework
 Evaluates the quality of the LLM threat analysis produced by Stage 4b
 using the RAGAS (Retrieval-Augmented Generation Assessment) framework.
 
+LLM Judge: Mistral API (mistral-large-latest) via LiteLLM / OpenAI-compatible client.
+           Set MISTRAL_API_KEY as a Colab secret or environment variable.
+
 Four metrics are computed per analysis entry:
   • Faithfulness      — Are all claims grounded in the retrieved context?
                         Score < 0.7 is considered hallucinatory.
@@ -38,37 +41,50 @@ from ragas.llms import llm_factory
 # They are imported here but instantiated dynamically inside _run_ragas.
 METRIC_COLS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
 
-RESULTS_JSON    = "/content/data/llm_results.json"
-LLM_METRICS_JSON = "/content/data/llm_metrics.json"
-FIGURES_DIR     = "/content/data/figures"
-OLLAMA_MODEL    = "llama3"
-OLLAMA_BASE_URL = "http://localhost:11434"
+RESULTS_JSON      = "/content/data/llm_results.json"
+LLM_METRICS_JSON  = "/content/data/llm_metrics.json"
+FIGURES_DIR       = "/content/data/figures"
+
+# ── Mistral API config (LLM judge for RAGAS evaluation) ──────────────────────
+MISTRAL_MODEL    = "mistral-large-latest"     # switch to mistral-small-latest for cheaper dev runs
+MISTRAL_API_BASE = "https://api.mistral.ai/v1"
+# API key is read from MISTRAL_API_KEY env var (set as a Colab secret)
+# ─────────────────────────────────────────────────────────────────────────────
 
 plt.style.use("dark_background")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _configure_ragas_llm(model: str = OLLAMA_MODEL):
+def _configure_ragas_llm(model: str = MISTRAL_MODEL,
+                         api_key: str = None):
     """
-    Configure RAGAS LLM and embeddings for local Ollama (RAGAS v0.2+ API).
+    Configure RAGAS LLM judge using the Mistral API via an OpenAI-compatible
+    client (works with LiteLLM routing or direct Mistral endpoint).
 
-    LLM : llm_factory pointed at Ollama's OpenAI-compatible /v1 endpoint.
-          api_key can be any non-empty string; Ollama ignores it.
+    LLM : llm_factory pointed at https://api.mistral.ai/v1 with the Mistral
+          API key.  RAGAS treats it identically to an OpenAI client.
     Emb : RAGAS native HuggingFaceEmbeddings (ragas.embeddings) wrapping
-          all-MiniLM-L6-v2. This is the "modern" embedding type required by
-          RAGAS collections metrics (Faithfulness, AnswerRelevancy, etc.).
-          The deprecated LangchainEmbeddingsWrapper is no longer accepted.
+          all-MiniLM-L6-v2.  Kept local to avoid additional API costs.
     """
+    import os
     from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
 
-    ollama_client = OpenAI(
-        base_url=f"{OLLAMA_BASE_URL}/v1",
-        api_key="ollama",
+    key = api_key or os.environ.get("MISTRAL_API_KEY", "")
+    if not key:
+        raise ValueError(
+            "Mistral API key not found. "
+            "Set the MISTRAL_API_KEY environment variable or pass api_key= directly."
+        )
+
+    mistral_client = OpenAI(
+        base_url=MISTRAL_API_BASE,
+        api_key=key,
     )
-    llm = llm_factory(model=model, client=ollama_client)
+    llm = llm_factory(model=model, client=mistral_client)
     emb = RagasHFEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2")
 
+    print(f"  RAGAS LLM judge → Mistral API ({model})")
     return llm, emb
 
 
@@ -134,8 +150,9 @@ def _build_ragas_dataset(results: list[dict],
 
 def _run_ragas(dataset, llm, emb) -> dict:
     """
-    Run RAGAS evaluation sequentially (max_workers=1) to avoid overwhelming
-    a local Ollama instance with concurrent requests, which causes TimeoutErrors.
+    Run RAGAS evaluation using the Mistral API as LLM judge.
+    The API handles concurrency, so max_workers > 1 is safe and speeds up
+    the evaluation significantly versus local Ollama.
     Returns a dict of averaged metric scores.
     """
     if len(dataset) == 0:
@@ -143,9 +160,9 @@ def _run_ragas(dataset, llm, emb) -> dict:
         return {k: 0.0 for k in METRIC_COLS}
 
     run_cfg = RunConfig(
-        max_workers=1,    # sequential — critical for local Ollama
-        timeout=90,       # 90 s per call — fail fast instead of stalling forever
-        max_retries=1,    # no retry spiral; if it fails once, move on
+        max_workers=4,    # Mistral API handles concurrency; 4 parallel RAGAS workers
+        timeout=120,      # 120 s per call — allow for API round-trip latency
+        max_retries=2,    # allow one retry on transient API errors
     )
     # Instantiate metrics with the LLM (required by RAGAS v0.2).
     # n_adaptations=1 is critical for local Ollama: the default of 3 means
@@ -281,16 +298,19 @@ def plot_faithfulness_bar(with_rag: dict, without_rag: dict, out_path: str):
 def llm_eval_stage(results_path: str   = RESULTS_JSON,
                    metrics_path: str   = LLM_METRICS_JSON,
                    figures_dir: str    = FIGURES_DIR,
-                   model: str          = OLLAMA_MODEL,
-                   max_samples: int    = 10) -> dict:  # 10 = ~80 Ollama calls; ~60–90 min on GPU
+                   model: str          = MISTRAL_MODEL,
+                   api_key: str        = None,
+                   max_samples: int    = 10) -> dict:  # 10 = ~80 API calls; ~5–15 min via Mistral API
     """
     End-to-end Stage 6 entry point.
     Evaluates LLM analysis quality with and without RAG context using RAGAS.
 
     Args:
-        max_samples: Cap on entries evaluated. RAGAS makes multiple LLM calls
-                     per row (4 metrics × N rows), so keep this small for local
-                     Ollama. 10 samples = ~80 LLM calls, runtime ~15-30 min.
+        model:       Mistral model name (e.g. 'mistral-large-latest').
+        api_key:     Mistral API key. Falls back to MISTRAL_API_KEY env var.
+        max_samples: Cap on entries evaluated. RAGAS makes multiple API calls
+                     per row (4 metrics × N rows). 10 samples ≈ ~80 API calls,
+                     runtime ~5–15 min via Mistral API.
                      Increase to 30 for the final thesis run.
     """
     os.makedirs(figures_dir, exist_ok=True)
@@ -323,7 +343,7 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
         results = [results[i] for i in sorted(indices)]
     print(f"  Evaluating {len(results)} entries …")
 
-    llm, emb = _configure_ragas_llm(model)
+    llm, emb = _configure_ragas_llm(model, api_key=api_key)
 
     # ── WITH RAG ─────────────────────────────────────────────────────────────
     print("\n── Evaluating WITH RAG context ────────────────────────────")

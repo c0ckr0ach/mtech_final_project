@@ -26,3 +26,6 @@ matplotlib
 seaborn
 langchain-ollama
 langchain-huggingface
+# ── LLM API bridge (Stage 6 — Mistral via LiteLLM) ──────────────────────────
+litellm
+openai
