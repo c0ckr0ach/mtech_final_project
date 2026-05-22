@@ -34,6 +34,45 @@ import matplotlib.pyplot as plt
 
 from openai import OpenAI
 from datasets import Dataset
+
+# ── Compatibility patch ────────────────────────────────────────────────────────
+# RAGAS's own llms/base.py hard-imports ChatVertexAI and VertexAI from
+# langchain_community, which were removed in langchain-community 0.3+
+# (moved to the separate langchain-google-vertexai package).
+# Colab installs langchain-community 0.3+ by default, so "from ragas import ..."
+# raises: ModuleNotFoundError: No module named 'langchain_community.chat_models.vertexai'
+#
+# Fix: inject lightweight stub modules into sys.modules BEFORE importing RAGAS.
+# The stubs satisfy the import without pulling in Google Cloud SDK dependencies.
+# RAGAS imports these at module load time but never calls them in our Mistral
+# API evaluation path, so placeholder classes are sufficient.
+import sys as _sys
+import types as _types
+
+def _stub_langchain_vertexai():
+    # Stub: langchain_community.chat_models.vertexai → ChatVertexAI
+    _mod = _sys.modules.get("langchain_community.chat_models.vertexai")
+    if _mod is None:
+        _mod = _types.ModuleType("langchain_community.chat_models.vertexai")
+        class ChatVertexAI:  # noqa: placeholder — never called in this pipeline
+            pass
+        _mod.ChatVertexAI = ChatVertexAI
+        _sys.modules["langchain_community.chat_models.vertexai"] = _mod
+
+    # Stub: VertexAI on langchain_community.llms (the non-chat LLM class)
+    try:
+        from langchain_community.llms import VertexAI  # noqa: already present
+    except ImportError:
+        import langchain_community.llms as _llms_mod
+        if not hasattr(_llms_mod, "VertexAI"):
+            class VertexAI:  # noqa: placeholder
+                pass
+            _llms_mod.VertexAI = VertexAI
+
+_stub_langchain_vertexai()
+del _stub_langchain_vertexai  # clean up namespace
+# ──────────────────────────────────────────────────────────────────────────────
+
 from ragas import evaluate, RunConfig
 
 # RAGAS v0.2+ canonical LLM setup:
