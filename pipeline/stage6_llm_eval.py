@@ -102,12 +102,14 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
 
     LLM : llm_factory pointed at Mistral's OpenAI-compatible endpoint.
           Satisfies RAGAS v0.2+'s strict InstructorLLM requirement.
-    Emb : Thin SentenceTransformer adapter that exposes the embed_query /
-          embed_documents interface RAGAS's AnswerRelevancy metric calls.
-          ragas.embeddings.HuggingFaceEmbeddings dropped this interface in
-          v0.2 so we wrap the library directly.
+    Emb : HuggingFaceEmbeddings(model_name=..., use_api=False) — the correct
+          RAGAS-native local embeddings class. It is a BaseRagasEmbedding
+          subclass and passes AnswerRelevancy's isinstance() check.
+          use_api=False uses sentence-transformers locally (no API key needed).
+          NOTE: constructor keyword is model_name= not model= in current RAGAS.
     """
     import os
+    from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
 
     key = api_key or os.environ.get("MISTRAL_API_KEY", "")
     if not key:
@@ -121,28 +123,17 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
         api_key=key,
     )
     llm = llm_factory(model=model, client=mistral_client)
+    # RAGAS-native local embeddings — correct call for current RAGAS version:
+    #   model_name= (not model=) and use_api=False to use sentence-transformers.
+    #   RagasHFEmbeddings IS a BaseRagasEmbedding subclass and passes the
+    #   isinstance() check inside AnswerRelevancy.__init__().
+    emb = RagasHFEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        use_api=False,
+    )
 
-    # ── Embeddings: SentenceTransformer adapter ───────────────────────────────
-    # ragas.embeddings.HuggingFaceEmbeddings lost the embed_query / embed_documents
-    # interface in v0.2 (AttributeError at runtime).  We wrap sentence-transformers
-    # directly and expose the two methods RAGAS's AnswerRelevancy metric calls.
-    from sentence_transformers import SentenceTransformer
-
-    class _STEmbeddings:
-        """Minimal LangChain-style embeddings adapter over SentenceTransformer."""
-        def __init__(self, model_name: str):
-            self._model = SentenceTransformer(model_name)
-
-        def embed_query(self, text: str) -> list[float]:
-            return self._model.encode(text, convert_to_numpy=True).tolist()
-
-        def embed_documents(self, texts: list[str]) -> list[list[float]]:
-            return self._model.encode(texts, convert_to_numpy=True).tolist()
-
-    emb = _STEmbeddings("sentence-transformers/all-MiniLM-L6-v2")
-
-    print(f"  RAGAS LLM judge → Mistral API ({model}) via llm_factory")
-    print(f"  RAGAS Embeddings → SentenceTransformer (all-MiniLM-L6-v2, local)")
+    print(f"  RAGAS LLM judge \u2192 Mistral API ({model}) via llm_factory")
+    print(f"  RAGAS Embeddings \u2192 HuggingFaceEmbeddings (all-MiniLM-L6-v2, local)")
     return llm, emb
 
 
