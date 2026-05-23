@@ -196,10 +196,12 @@ def _run_ragas(dataset: EvaluationDataset, llm, emb) -> dict:
         max_retries=3,    # 3 retries on transient API errors
     )
 
-    # ── Metric instantiation (RAGAS v0.2+ — ragas.metrics.collections) ─────────
-    # ragas.metrics.collections is the non-deprecated home of these classes.
-    # ragas.metrics still works but emits DeprecationWarning for every import.
-    from ragas.metrics.collections import (
+    # ── Metric instantiation (RAGAS v0.2+ / v0.4+ legacy compatibility) ────────
+    # Note: RAGAS's evaluate() function currently performs a strict type check
+    # against the legacy `Metric` base class, which is not satisfied by the 
+    # classes in `ragas.metrics.collections` in some versions, throwing a TypeError.
+    # We import from `ragas.metrics` to ensure compatibility and bypass this issue.
+    from ragas.metrics import (
         Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
     )
 
