@@ -48,8 +48,10 @@ def configure_dspy(model: str = OLLAMA_MODEL):
 class ThreatAnalysis(dspy.Signature):
     """
     You are a senior threat-intelligence analyst.
-    Given a Windows security anomaly, related topic keywords, and retrieved
-    threat-intel context, produce a structured analysis.
+    You MUST base every claim in your analysis ONLY on the passages provided
+    in retrieved_docs. Do NOT use knowledge outside those passages.
+    First, extract direct verbatim quotes from retrieved_docs that support
+    your findings. Then write your analysis grounded in those quotes.
     """
     anomaly_context: str  = dspy.InputField(
         desc="EventID, process image, hostname, account, granted access, "
@@ -59,18 +61,34 @@ class ThreatAnalysis(dspy.Signature):
         desc="BERTopic cluster keywords that describe the group this event belongs to."
     )
     retrieved_docs: str   = dspy.InputField(
-        desc="Relevant passages from MITRE ATT&CK, D3FEND, CAR, CISA KEV, "
-             "and Sigma rules retrieved via semantic search."
+        desc="The ONLY source you may use. Contains passages from MITRE ATT&CK, "
+             "D3FEND, CAR, CISA KEV, and Sigma rules. Quote directly from this."
     )
 
-    threat_analysis: str    = dspy.OutputField(
-        desc="1–3 sentence analysis of the likely threat this anomaly represents."
+    evidence_quotes: str  = dspy.OutputField(
+        desc=(
+            "2–4 direct verbatim quotes copied word-for-word from retrieved_docs "
+            "that support the analysis. Format each on its own line as: "
+            "'• [SOURCE_TAG] exact text copied from the document'. "
+            "SOURCE_TAG is the bracketed label at the start of the passage "
+            "(e.g. MITRE_ATTACK, SIGMA, CISA_KEV). "
+            "Do NOT paraphrase. Copy the exact words."
+        )
+    )
+    threat_analysis: str  = dspy.OutputField(
+        desc=(
+            "1–3 sentence analysis of the likely threat this anomaly represents. "
+            "Every factual claim must be directly supported by one of the "
+            "evidence_quotes above. Do not introduce any fact not present in "
+            "retrieved_docs."
+        )
     )
     mitre_technique: str    = dspy.OutputField(
         desc="Most applicable MITRE ATT&CK technique, e.g. 'T1055 - Process Injection'."
     )
     remediation_steps: str  = dspy.OutputField(
-        desc="Numbered list of 3–5 concrete detection or remediation steps."
+        desc="Numbered list of 3–5 concrete detection or remediation steps "
+             "derived from the retrieved_docs passages."
     )
     severity_rating: str    = dspy.OutputField(
         desc="One of: Critical / High / Medium / Low — with a one-sentence rationale."
@@ -104,18 +122,35 @@ FEW_SHOT_EXAMPLES = [
             "Message: Process accessed lsass with full handle rights."
         ),
         topic_keywords="lsass, credential, access, memory, dump, mimikatz, process",
-        retrieved_docs="[MITRE_ATTACK] T1003.001 - LSASS Memory: Adversaries may "
-                       "attempt to access credential material stored in LSASS.",
+        retrieved_docs=(
+            "[MITRE_ATTACK] T1003.001 - LSASS Memory: Adversaries may attempt to "
+            "access credential material stored in the process memory of the Local "
+            "Security Authority Subsystem Service (LSASS). After gaining OS-level "
+            "access, credentials can be extracted directly from LSASS memory."
+            "\n[SIGMA] win_lsass_access_non_system_account: Detects process access "
+            "requests to LSASS memory with suspicious access rights (0x1FFFFF) from "
+            "non-system accounts, which is a common indicator of credential dumping."
+        ),
+        # evidence_quotes: verbatim passages copied from retrieved_docs above
+        evidence_quotes=(
+            "• [MITRE_ATTACK] Adversaries may attempt to access credential material "
+            "stored in the process memory of the Local Security Authority Subsystem "
+            "Service (LSASS).\n"
+            "• [SIGMA] Detects process access requests to LSASS memory with suspicious "
+            "access rights (0x1FFFFF) from non-system accounts, which is a common "
+            "indicator of credential dumping."
+        ),
         threat_analysis=(
-            "This event strongly indicates credential dumping via direct LSASS "
-            "memory access, consistent with tools like Mimikatz or ProcDump. "
-            "Full handle rights (0x1FFFFF) are rarely required by legitimate processes."
+            "According to the retrieved MITRE ATT&CK passage, adversaries access LSASS "
+            "memory to extract credential material; the GrantedAccess value 0x1FFFFF "
+            "matches exactly the pattern flagged by the Sigma rule as a common indicator "
+            "of credential dumping. This event is consistent with T1003.001."
         ),
         mitre_technique="T1003.001 - OS Credential Dumping: LSASS Memory",
         remediation_steps=(
-            "1. Enable Credential Guard (Windows 10/11).\n"
-            "2. Restrict LSASS access via Protected Process Light (PPL).\n"
-            "3. Alert on GrantedAccess 0x1FFFFF targeting lsass.exe.\n"
+            "1. Enable Credential Guard (Windows 10/11) — prevents LSASS memory access.\n"
+            "2. Restrict LSASS via Protected Process Light (PPL).\n"
+            "3. Alert on GrantedAccess 0x1FFFFF targeting lsass.exe (per Sigma rule).\n"
             "4. Deploy Sigma rule 'win_lsass_access_non_system_account'.\n"
             "5. Review process lineage for the accessing process."
         ),
@@ -129,18 +164,38 @@ FEW_SHOT_EXAMPLES = [
             "Message: Registry value set for persistence."
         ),
         topic_keywords="registry, persistence, run, key, startup, autorun",
-        retrieved_docs="[MITRE_ATTACK] T1547.001 - Registry Run Keys: Adversaries "
-                       "may achieve persistence by adding a program to a Run key.",
+        retrieved_docs=(
+            "[MITRE_ATTACK] T1547.001 - Boot or Logon Autostart Execution: Registry "
+            "Run Keys / Startup Folder: Adversaries may achieve persistence by adding a "
+            "program to a startup folder or referencing it with a Registry run key. "
+            "Adding an entry to the Run keys in the Registry will cause the program "
+            "referenced to be executed when a user logs in."
+            "\n[SIGMA] win_registry_run_key_modification: Detects modification of "
+            "registry run keys which are commonly used for persistence by malware "
+            "and attackers to execute payloads at system startup."
+        ),
+        # evidence_quotes: verbatim passages copied from retrieved_docs above
+        evidence_quotes=(
+            "• [MITRE_ATTACK] Adversaries may achieve persistence by adding a program "
+            "to a startup folder or referencing it with a Registry run key.\n"
+            "• [MITRE_ATTACK] Adding an entry to the Run keys in the Registry will "
+            "cause the program referenced to be executed when a user logs in.\n"
+            "• [SIGMA] Detects modification of registry run keys which are commonly "
+            "used for persistence by malware and attackers to execute payloads at "
+            "system startup."
+        ),
         threat_analysis=(
-            "A new Run key was written by reg.exe, a classic persistence mechanism. "
-            "The key name 'backdoor' is highly suspicious and warrants immediate review."
+            "The MITRE ATT&CK passage states that adversaries add programs to Registry "
+            "run keys to achieve persistence, causing execution at logon; the Sigma rule "
+            "confirms this exact modification pattern is a known malware persistence "
+            "indicator. The key name 'backdoor' written by reg.exe is highly suspicious."
         ),
         mitre_technique="T1547.001 - Boot or Logon Autostart: Registry Run Keys",
         remediation_steps=(
             "1. Remove the malicious Run key immediately.\n"
-            "2. Alert on unexpected writes to HKLM\\SOFTWARE\\...\\Run\\.\n"
+            "2. Alert on unexpected writes to HKLM\\SOFTWARE\\...\\Run keys (per Sigma rule).\n"
             "3. Audit reg.exe invocations not launched by administrators.\n"
-            "4. Use Sigma rule 'win_registry_run_key_modification'.\n"
+            "4. Deploy Sigma rule 'win_registry_run_key_modification'.\n"
             "5. Investigate the parent process that spawned reg.exe."
         ),
         severity_rating="High — Persistence mechanism allows re-infection after reboot.",
@@ -150,8 +205,12 @@ FEW_SHOT_EXAMPLES = [
 
 def _bootstrap_metric(example, pred, trace=None):
     """Non-empty-output metric for BootstrapFewShot — must be a module-level
-    function (not a lambda / closure) so DSPy can pickle it correctly."""
+    function (not a lambda / closure) so DSPy can pickle it correctly.
+    Requires evidence_quotes to be non-empty: this is the key signal that
+    Llama 3 grounded its analysis in the retrieved docs rather than hallucinating.
+    """
     return (
+        bool(getattr(pred, "evidence_quotes", "")) and   # citations are mandatory
         bool(getattr(pred, "threat_analysis", "")) and
         bool(getattr(pred, "mitre_technique", "")) and
         bool(getattr(pred, "remediation_steps", ""))
@@ -209,12 +268,17 @@ def build_anomaly_context(row: pd.Series) -> str:
 # ── Main analysis loop ────────────────────────────────────────────────────────
 
 def display_result(result: dict, idx: int):
+    evidence = result.get("evidence_quotes", "").strip()
+    evidence_block = (
+        f"\n**Evidence (cited from retrieved docs)**\n{evidence}\n"
+        if evidence else ""
+    )
     md = f"""
 ---
 ### Analysis #{idx+1} — Topic {result['topic_id']}
 **Event:** `{result['event_id']}` on `{result['hostname']}`
 **Topic keywords:** _{result['topic_keywords']}_
-
+{evidence_block}
 **Threat Analysis**
 {result['threat_analysis']}
 
@@ -285,7 +349,8 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
                     "event_id"         : int(row["event_id"]),
                     "hostname"         : row["hostname"],
                     "anomaly_score"    : float(row.get("anomaly_score", 0)),
-                    "retrieved_docs"   : docs,  # stored for Stage 6 RAG vs no-RAG eval
+                    "retrieved_docs"   : docs,   # stored for Stage 6 RAG vs no-RAG eval
+                    "evidence_quotes"  : getattr(pred, "evidence_quotes", ""),  # citation grounding
                     "threat_analysis"  : pred.threat_analysis,
                     "mitre_technique"  : pred.mitre_technique,
                     "remediation_steps": pred.remediation_steps,

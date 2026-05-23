@@ -138,12 +138,12 @@ def _build_ragas_dataset(results: list[dict],
             f"EventID {r.get('event_id')} on host {r.get('hostname')}. "
             f"Topic keywords: {r.get('topic_keywords', '')}."
         )
-        answer   = (
-            f"Threat Analysis: {r.get('threat_analysis', '')}\n"
-            f"MITRE Technique: {r.get('mitre_technique', '')}\n"
-            f"Remediation: {r.get('remediation_steps', '')}\n"
-            f"Severity: {r.get('severity_rating', '')}"
-        )
+        # Use only the prose threat_analysis as the RAGAS response.
+        # RAGAS Answer Relevancy works by reverse-engineering a question from
+        # the response; a multi-field structured form breaks this process.
+        # A single prose answer shares topic vocabulary with the question and
+        # allows the metric to correctly compute similarity.
+        answer = r.get("threat_analysis", "")
         if no_rag:
             contexts = ["[No retrieval context provided — baseline condition.]"
                         " This string intentionally contains no threat-intel information."]
