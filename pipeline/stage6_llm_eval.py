@@ -102,11 +102,11 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
 
     LLM : llm_factory pointed at Mistral's OpenAI-compatible endpoint.
           Satisfies RAGAS v0.2+'s strict InstructorLLM requirement.
-    Emb : HuggingFaceEmbeddings(model_name=..., use_api=False) — the correct
+    Emb : HuggingFaceEmbeddings(model=..., use_api=False) — the correct
           RAGAS-native local embeddings class. It is a BaseRagasEmbedding
           subclass and passes AnswerRelevancy's isinstance() check.
           use_api=False uses sentence-transformers locally (no API key needed).
-          NOTE: constructor keyword is model_name= not model= in current RAGAS.
+          NOTE: constructor keyword is model= not model_name= in current RAGAS.
     """
     import os
     from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
@@ -124,11 +124,11 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
     )
     llm = llm_factory(model=model, client=mistral_client)
     # RAGAS-native local embeddings — correct call for current RAGAS version:
-    #   model_name= (not model=) and use_api=False to use sentence-transformers.
+    #   model= (not model_name=) and use_api=False to use sentence-transformers.
     #   RagasHFEmbeddings IS a BaseRagasEmbedding subclass and passes the
     #   isinstance() check inside AnswerRelevancy.__init__().
     emb = RagasHFEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2",
+        model="sentence-transformers/all-MiniLM-L6-v2",
         use_api=False,
     )
 
