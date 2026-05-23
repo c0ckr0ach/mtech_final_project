@@ -100,12 +100,14 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
     """
     Configure RAGAS LLM judge using the Mistral API.
 
-    LLM : llm_factory pointed at Mistral's OpenAI-compatible endpoint. This
-          satisfies RAGAS v0.2+'s strict requirement for an InstructorLLM.
-    Emb : RAGAS native HuggingFaceEmbeddings (all-MiniLM-L6-v2) kept local.
+    LLM : llm_factory pointed at Mistral's OpenAI-compatible endpoint.
+          Satisfies RAGAS v0.2+'s strict InstructorLLM requirement.
+    Emb : Thin SentenceTransformer adapter that exposes the embed_query /
+          embed_documents interface RAGAS's AnswerRelevancy metric calls.
+          ragas.embeddings.HuggingFaceEmbeddings dropped this interface in
+          v0.2 so we wrap the library directly.
     """
     import os
-    from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
 
     key = api_key or os.environ.get("MISTRAL_API_KEY", "")
     if not key:
@@ -119,9 +121,28 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
         api_key=key,
     )
     llm = llm_factory(model=model, client=mistral_client)
-    emb = RagasHFEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2")
+
+    # ── Embeddings: SentenceTransformer adapter ───────────────────────────────
+    # ragas.embeddings.HuggingFaceEmbeddings lost the embed_query / embed_documents
+    # interface in v0.2 (AttributeError at runtime).  We wrap sentence-transformers
+    # directly and expose the two methods RAGAS's AnswerRelevancy metric calls.
+    from sentence_transformers import SentenceTransformer
+
+    class _STEmbeddings:
+        """Minimal LangChain-style embeddings adapter over SentenceTransformer."""
+        def __init__(self, model_name: str):
+            self._model = SentenceTransformer(model_name)
+
+        def embed_query(self, text: str) -> list[float]:
+            return self._model.encode(text, convert_to_numpy=True).tolist()
+
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            return self._model.encode(texts, convert_to_numpy=True).tolist()
+
+    emb = _STEmbeddings("sentence-transformers/all-MiniLM-L6-v2")
 
     print(f"  RAGAS LLM judge → Mistral API ({model}) via llm_factory")
+    print(f"  RAGAS Embeddings → SentenceTransformer (all-MiniLM-L6-v2, local)")
     return llm, emb
 
 
@@ -178,15 +199,16 @@ def _run_ragas(dataset: EvaluationDataset, llm, emb) -> dict:
         return {k: 0.0 for k in METRIC_COLS}
 
     run_cfg = RunConfig(
-        max_workers=4,    # Mistral API handles concurrency; 4 parallel RAGAS workers
+        max_workers=1,    # Free-tier Mistral: 1 worker prevents 429 rate-limit errors
+                          # that zero out Context Recall. Slower but complete.
         timeout=120,      # 120 s per call — allow for API round-trip latency
-        max_retries=2,    # allow one retry on transient API errors
+        max_retries=3,    # 3 retries on transient API errors
     )
 
-    # ── Metric instantiation (RAGAS v0.2+) ───────────────────────────────────
-    # The new API imports metrics as classes and they must be instantiated
-    # directly with the InstructorLLM.
-    from ragas.metrics import (
+    # ── Metric instantiation (RAGAS v0.2+ — ragas.metrics.collections) ─────────
+    # ragas.metrics.collections is the non-deprecated home of these classes.
+    # ragas.metrics still works but emits DeprecationWarning for every import.
+    from ragas.metrics.collections import (
         Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
     )
 
