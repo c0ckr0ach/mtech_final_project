@@ -74,18 +74,10 @@ del _stub_langchain_vertexai  # clean up namespace
 # ──────────────────────────────────────────────────────────────────────────────
 
 from ragas import evaluate, RunConfig
+from ragas.llms import llm_factory
+from ragas.dataset_schema import SingleTurnSample, EvaluationDataset
 
-# RAGAS v0.2+ canonical LLM setup:
-#   LangchainLLMWrapper(ChatOpenAI(...)) is the correct LLM type that RAGAS's
-#   isinstance(m, Metric) check and metric constructors expect.
-#   Using llm_factory(model, client=OpenAI(...)) produces a wrapper that passes
-#   Python's type() but is not recognized by RAGAS's internal Langchain callback
-#   protocol, causing the "All metrics must be initialised metric objects" TypeError.
-from langchain_openai import ChatOpenAI
-from ragas.llms import LangchainLLMWrapper
-
-# RAGAS v0.2+: metrics are classes that must be instantiated with an LLM.
-# They are imported here but instantiated dynamically inside _run_ragas.
+# RAGAS v0.2+: The newest API enforces metrics to be instantiated as objects.
 METRIC_COLS = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
 
 RESULTS_JSON      = "/content/data/llm_results.json"
@@ -108,13 +100,9 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
     """
     Configure RAGAS LLM judge using the Mistral API.
 
-    LLM : LangchainLLMWrapper(ChatOpenAI(...)) — the canonical RAGAS v0.2+
-          LLM type. ChatOpenAI's base_url is pointed at Mistral's
-          OpenAI-compatible endpoint. This is the only wrapper type that RAGAS
-          metrics accept; passing a raw openai.OpenAI client via llm_factory
-          causes a TypeError at evaluate() time.
-    Emb : RAGAS native HuggingFaceEmbeddings (all-MiniLM-L6-v2) kept local
-          to avoid additional API costs.
+    LLM : llm_factory pointed at Mistral's OpenAI-compatible endpoint. This
+          satisfies RAGAS v0.2+'s strict requirement for an InstructorLLM.
+    Emb : RAGAS native HuggingFaceEmbeddings (all-MiniLM-L6-v2) kept local.
     """
     import os
     from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
@@ -126,25 +114,24 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
             "Set the MISTRAL_API_KEY environment variable or pass api_key= directly."
         )
 
-    chat_model = ChatOpenAI(
-        model=model,
+    mistral_client = OpenAI(
         base_url=MISTRAL_API_BASE,
         api_key=key,
     )
-    llm = LangchainLLMWrapper(chat_model)
+    llm = llm_factory(model=model, client=mistral_client)
     emb = RagasHFEmbeddings(model="sentence-transformers/all-MiniLM-L6-v2")
 
-    print(f"  RAGAS LLM judge → Mistral API ({model}) via LangchainLLMWrapper")
+    print(f"  RAGAS LLM judge → Mistral API ({model}) via llm_factory")
     return llm, emb
 
 
 def _build_ragas_dataset(results: list[dict],
                          no_rag: bool = False):
     """
-    Convert llm_results.json entries into an EvaluationDataset (RAGAS v0.2+)
-    or fallback to a HuggingFace Dataset.
+    Convert llm_results.json entries strictly into an EvaluationDataset (RAGAS v0.2+).
+    This uses the modern SingleTurnSample format. Legacy support is removed.
     """
-    rows = []
+    samples = []
     for r in results:
         question = (
             f"Analyse this security anomaly: "
@@ -168,42 +155,23 @@ def _build_ragas_dataset(results: list[dict],
 
         ground_truth = r.get("mitre_technique", "Unknown technique")
 
-        rows.append({
-            "user_input": question,
-            "response": answer,
-            "retrieved_contexts": contexts,
-            "reference": ground_truth,
-            # Fallback legacy columns for compatibility
-            "question": question,
-            "answer": answer,
-            "contexts": contexts,
-            "ground_truth": ground_truth,
-        })
+        sample = SingleTurnSample(
+            user_input=question,
+            response=answer,
+            retrieved_contexts=contexts,
+            reference=ground_truth,
+        )
+        samples.append(sample)
 
-    try:
-        from ragas import SingleTurnSample, EvaluationDataset
-        samples = [
-            SingleTurnSample(
-                user_input=row["user_input"],
-                response=row["response"],
-                retrieved_contexts=row["retrieved_contexts"],
-                reference=row["reference"],
-            )
-            for row in rows
-        ]
-        return EvaluationDataset(samples=samples)
-    except ImportError:
-        from datasets import Dataset
-        return Dataset.from_list(rows)
+    return EvaluationDataset(samples=samples)
 
 
 
-def _run_ragas(dataset, llm, emb) -> dict:
+def _run_ragas(dataset: EvaluationDataset, llm, emb) -> dict:
     """
     Run RAGAS evaluation using the Mistral API as LLM judge.
-    The API handles concurrency, so max_workers > 1 is safe and speeds up
-    the evaluation significantly versus local Ollama.
-    Returns a dict of averaged metric scores.
+    Strictly uses the RAGAS v0.2+ API: instantiated metrics run against an
+    EvaluationDataset.
     """
     if len(dataset) == 0:
         print("  [WARNING] Evaluation dataset is empty. Skipping RAGAS evaluation and returning zero scores.")
@@ -214,43 +182,24 @@ def _run_ragas(dataset, llm, emb) -> dict:
         timeout=120,      # 120 s per call — allow for API round-trip latency
         max_retries=2,    # allow one retry on transient API errors
     )
-    # ── Metric instantiation (RAGAS v0.2+) ───────────────────────────────────
-    # With a proper LangchainLLMWrapper LLM, metrics accept llm= directly.
-    # We still use a graceful factory to handle minor API differences across
-    # RAGAS patch versions (some classes don't expose embeddings= on all metrics).
-    try:
-        from ragas.metrics.collections import (
-            Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
-        )
-    except ImportError:
-        from ragas.metrics import (
-            Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
-        )
 
-    def _make_metric(cls, **kw):
-        """Construct a RAGAS metric, gracefully dropping unsupported kwargs."""
-        try:
-            return cls(**kw)
-        except TypeError:
-            # Drop embeddings= first (only AnswerRelevancy uses it)
-            kw.pop("embeddings", None)
-            try:
-                return cls(**kw)
-            except TypeError:
-                # Absolute fallback: llm= only
-                return cls(llm=kw["llm"])
+    # ── Metric instantiation (RAGAS v0.2+) ───────────────────────────────────
+    # The new API imports metrics as classes and they must be instantiated
+    # directly with the InstructorLLM.
+    from ragas.metrics import (
+        Faithfulness, AnswerRelevancy, ContextPrecision, ContextRecall
+    )
 
     metrics = [
-        _make_metric(Faithfulness,     llm=llm),
-        _make_metric(AnswerRelevancy,  llm=llm, embeddings=emb),
-        _make_metric(ContextPrecision, llm=llm),
-        _make_metric(ContextRecall,    llm=llm),
+        Faithfulness(llm=llm),
+        AnswerRelevancy(llm=llm, embeddings=emb),
+        ContextPrecision(llm=llm),
+        ContextRecall(llm=llm),
     ]
 
     result = evaluate(
         dataset,
         metrics=metrics,
-        llm=llm,
         run_config=run_cfg,
         raise_exceptions=False,
     )
