@@ -121,6 +121,7 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
     mistral_client = OpenAI(
         base_url=MISTRAL_API_BASE,
         api_key=key,
+        max_retries=10,  # Gracefully backoff & retry on Mistral API free tier 429 rate limits
     )
     llm = llm_factory(model=model, client=mistral_client)
     # RAGAS-native local embeddings — correct call for current RAGAS version:
