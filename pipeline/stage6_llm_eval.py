@@ -132,6 +132,7 @@ def _configure_ragas_llm(model: str = MISTRAL_MODEL,
         client = OpenAI(
             base_url="https://api.groq.com/openai/v1",
             api_key=groq_key,
+            max_retries=10,  # Automatically retry on Groq rate limits with backoff
         )
     elif mistral_key:
         # Use Mistral API
@@ -222,13 +223,12 @@ def _run_ragas(dataset: EvaluationDataset, llm, emb) -> dict:
         print("  [WARNING] Evaluation dataset is empty. Skipping RAGAS evaluation and returning zero scores.")
         return {k: 0.0 for k in METRIC_COLS}
 
-    is_groq = bool(os.environ.get("GROQ_API_KEY"))
-    workers = 4 if is_groq else 1
-
+    # For both Groq and Mistral, we use 1 worker to strictly respect the Requests-Per-Minute (RPM) 
+    # limits of their free tiers. Groq's high generation speed ensures it still completes extremely fast!
     run_cfg = RunConfig(
-        max_workers=workers,  # 4 for Groq (fast, high rate limits), 1 for Mistral (prevents 429)
-        timeout=120,          # 120 s per call — allow for API round-trip latency
-        max_retries=3,        # 3 retries on transient API errors
+        max_workers=1,
+        timeout=120,
+        max_retries=3,
     )
 
     # ── Metric instantiation (RAGAS v0.2+ / v0.4+ legacy compatibility) ────────
