@@ -98,43 +98,75 @@ plt.style.use("dark_background")
 def _configure_ragas_llm(model: str = MISTRAL_MODEL,
                          api_key: str = None):
     """
-    Configure RAGAS LLM judge using the Mistral API.
+    Configure RAGAS LLM judge and Local Embeddings.
+    Supports either Groq API (ultra-fast, high rate limits) or Mistral API dynamically.
 
-    LLM : llm_factory pointed at Mistral's OpenAI-compatible endpoint.
-          Satisfies RAGAS v0.2+'s strict InstructorLLM requirement.
-    Emb : HuggingFaceEmbeddings(model=..., use_api=False) — the correct
-          RAGAS-native local embeddings class. It is a BaseRagasEmbedding
-          subclass and passes AnswerRelevancy's isinstance() check.
-          use_api=False uses sentence-transformers locally (no API key needed).
-          NOTE: constructor keyword is model= not model_name= in current RAGAS.
+    LLM : llm_factory pointed at either Groq or Mistral OpenAI-compatible endpoint.
+    Emb : LangChain HuggingFaceEmbeddings wrapped in Ragas' LangchainEmbeddingsWrapper.
+          This is 100% robust and prevents the AttributeError on embed_query
+          found in some versions' native Ragas wrappers.
     """
     import os
-    from ragas.embeddings import HuggingFaceEmbeddings as RagasHFEmbeddings
+    
+    # ── 1. Dynamic Provider Detection ─────────────────────────────────────────
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+    if not groq_key:
+        try:
+            from google.colab import userdata
+            groq_key = userdata.get("GROQ_API_KEY")
+        except Exception:
+            pass
 
-    key = api_key or os.environ.get("MISTRAL_API_KEY", "")
-    if not key:
+    mistral_key = api_key or os.environ.get("MISTRAL_API_KEY", "")
+    if not mistral_key:
+        try:
+            from google.colab import userdata
+            mistral_key = userdata.get("MISTRAL_API_KEY")
+        except Exception:
+            pass
+
+    if groq_key:
+        # Use Groq API (extremely fast, high rate limits)
+        provider_name = "Groq API"
+        target_model = "llama-3.3-70b-versatile" if model == MISTRAL_MODEL else model
+        client = OpenAI(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=groq_key,
+        )
+    elif mistral_key:
+        # Use Mistral API
+        provider_name = "Mistral API"
+        target_model = model
+        client = OpenAI(
+            base_url=MISTRAL_API_BASE,
+            api_key=mistral_key,
+            max_retries=10,  # Gracefully backoff on Mistral free-tier 429 errors
+        )
+    else:
         raise ValueError(
-            "Mistral API key not found. "
-            "Set the MISTRAL_API_KEY environment variable or pass api_key= directly."
+            "No API key found. Set either GROQ_API_KEY or MISTRAL_API_KEY "
+            "as a Colab secret (🔑 icon) or environment variable."
         )
 
-    mistral_client = OpenAI(
-        base_url=MISTRAL_API_BASE,
-        api_key=key,
-        max_retries=10,  # Gracefully backoff & retry on Mistral API free tier 429 rate limits
-    )
-    llm = llm_factory(model=model, client=mistral_client)
-    # RAGAS-native local embeddings — correct call for current RAGAS version:
-    #   model= (not model_name=) and use_api=False to use sentence-transformers.
-    #   RagasHFEmbeddings IS a BaseRagasEmbedding subclass and passes the
-    #   isinstance() check inside AnswerRelevancy.__init__().
-    emb = RagasHFEmbeddings(
-        model="sentence-transformers/all-MiniLM-L6-v2",
-        use_api=False,
-    )
+    llm = llm_factory(model=target_model, client=client)
 
-    print(f"  RAGAS LLM judge \u2192 Mistral API ({model}) via llm_factory")
-    print(f"  RAGAS Embeddings \u2192 HuggingFaceEmbeddings (all-MiniLM-L6-v2, local)")
+    # ── 2. Embeddings Wrapper Setup ───────────────────────────────────────────
+    # Wrapping LangChain's HuggingFaceEmbeddings class using LangchainEmbeddingsWrapper
+    # is the standard and most robust way to use local sentence-transformers in Ragas.
+    # It ensures all required methods (like embed_query/embed_documents) are correctly exposed.
+    try:
+        from langchain_huggingface import HuggingFaceEmbeddings as LCHuggingFaceEmbeddings
+    except ImportError:
+        from langchain_community.embeddings import HuggingFaceEmbeddings as LCHuggingFaceEmbeddings
+    from ragas.embeddings import LangchainEmbeddingsWrapper
+
+    hf_emb = LCHuggingFaceEmbeddings(
+        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    )
+    emb = LangchainEmbeddingsWrapper(hf_emb)
+
+    print(f"  RAGAS LLM judge \u2192 {provider_name} ({target_model}) via llm_factory")
+    print(f"  RAGAS Embeddings \u2192 LangchainEmbeddingsWrapper(HuggingFace all-MiniLM-L6-v2, local)")
     return llm, emb
 
 
@@ -190,11 +222,13 @@ def _run_ragas(dataset: EvaluationDataset, llm, emb) -> dict:
         print("  [WARNING] Evaluation dataset is empty. Skipping RAGAS evaluation and returning zero scores.")
         return {k: 0.0 for k in METRIC_COLS}
 
+    is_groq = bool(os.environ.get("GROQ_API_KEY"))
+    workers = 4 if is_groq else 1
+
     run_cfg = RunConfig(
-        max_workers=1,    # Free-tier Mistral: 1 worker prevents 429 rate-limit errors
-                          # that zero out Context Recall. Slower but complete.
-        timeout=120,      # 120 s per call — allow for API round-trip latency
-        max_retries=3,    # 3 retries on transient API errors
+        max_workers=workers,  # 4 for Groq (fast, high rate limits), 1 for Mistral (prevents 429)
+        timeout=120,          # 120 s per call — allow for API round-trip latency
+        max_retries=3,        # 3 retries on transient API errors
     )
 
     # ── Metric instantiation (RAGAS v0.2+ / v0.4+ legacy compatibility) ────────

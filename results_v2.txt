@@ -1,0 +1,344 @@
+Number of cells: 46
+--- Cell 8 (Code) ---
+Source:
+df_norm = parse_stage(
+    data_path  = DATA_PATH,
+    out_path   = NORMALIZED_PARQUET,
+    chunk_size = 50_000,
+)
+df_norm.head(3)
+
+
+Output snippet:
+Streaming: /content/data_path/apt29_evals_day1_manual_2020-05-01225525.json
+
+Parsed 196,081 events | JSON errors: 0
+Saved -> /content/data/normalized.parquet  (196,081 rows x 39 cols)
+             timestamp  hour_of_day  day_of_week  event_id  \
+0  2020-05-01T22:55:23           22            4        10   
+1  2020-05-01T22:55:23           22            4        10   
+2  2020-05-01T22:55:23           22            4        10   
+
+                                channel               source_name severity  \
+0  Microsoft-Windows-Sysmon/Operational  Microsoft-Windows-Sysmon     INFO   
+1  Microsoft-Windows-Sysmon/Operational  Microsoft-Windows-Sysmon     INFO   
+2  Microsoft-Windows-Sysmon/Operational  Microsoft-Windows-Sysmon     INFO   
+
+   severity_value             hostname account_name  ... eid_4690  eid_4663  \
+0               2  UTICA.dmevals.local       SYSTEM  ...        0         0   
+1               2  UTICA.dmevals.local       SYSTEM  ...        0         0   
+2               2  UTICA.dmevals.local       SYSTEM  ...        0         0   
+
+  eid_800 eid_4103  eid_5156  eid_5447 eid_5158 eid_4703  eid_11  \
+0       0        0         0         0        0        0       0   
+1       0        0         0         0        0        0       0   
+2       0        0         0         0        0        0       0   
+
+  channel_bucket  
+0         Sysmon  
+1         Sysmon  
+2         Sysmon  
+
+[3 rows x 39 columns]
+--------------------------------------------------
+--- Cell 16 (Code) ---
+Source:
+anomalies_df = anomaly_stage(
+    labeled_path   = LABELED_PARQUET,
+    anomalies_path = ANOMALIES_PARQUET,
+    contamination  = CONTAMINATION,
+)
+
+
+Output snippet:
+Loading labeled parquet …
+    Shape: (196081, 40)
+    Ground truth positives: 1,942 (1.0%)
+
+── Running anomaly detectors ──────────────────────────────
+  [A] Training Isolation Forest …
+      IF anomalies: 9,804  (5.00%)
+  [B] Training One-Class SVM …
+      OCSVM anomalies: 9,672  (4.93%)
+  [C] Training Deep Autoencoder …
+      Using device: cuda
+      Epoch [01/30]  loss=0.087332
+      Epoch [05/30]  loss=0.005409
+      Epoch [10/30]  loss=0.003680
+      Epoch [15/30]  loss=0.002779
+      Epoch [20/30]  loss=0.002286
+      Epoch [25/30]  loss=0.001901
+      Epoch [30/30]  loss=0.001913
+      AE anomalies  : 9,875  (5.04%)
+────────────────────────────────────────────────────────────
+
+  Union anomalies (any model): 19,540  (9.97%)
+  UMAP on 60,000 samples …
+/usr/local/lib/python3.12/dist-packages/umap/umap_.py:1952: UserWarning:
+
+n_jobs value 1 overridden to 1 by setting random_state. Use no seed for parallelism.
+
+
+  Anomalies saved → /content/data/anomalies.parquet
+
+Top anomalous EventIDs (all models):
+           count  avg_if_score  avg_ae_score  hosts
+event_id                                          
+5858         49     -0.522482      0.006994      2
+4656        683     -0.518601      0.002119      4
+7           485     -0.514893      0.000806      3
+10         1937     -0.509516      0.005254      4
+4690        549     -0.508490      0.001007      4
+4658        882     -0.504405      0.001729      4
+4103       1544     -0.502434      0.001686      3
+800        1006     -0.501150      0.001827      3
+5447       2587     -0.498020      0.001423      1
+4663        654     -0.494761      0.001055      4
+5156       1100     -0.492061      0.001742      4
+4624         11     -0.490860      0.006895      1
+13          796     -0.485404      0.002623      4
+4703       1802     -0.477578      0.005250      4
+4688         34     -0.468439      0.006555      2
+
+--------------------------------------------------
+--- Cell 20 (Code) ---
+Source:
+df_a, topic_model = topic_stage(
+    anomalies_path = ANOMALIES_PARQUET,
+    topics_path    = TOPICS_PARQUET,
+    model_dir      = TOPIC_MODEL_DIR,
+)
+
+
+Output snippet:
+Loading anomalies...
+    Shape: (19540, 50)
+Cleaning log text...
+    Corpus size: 19,540 documents
+    Sample doc : windows filtering platform permitted connection application information process application name device harddiskvolume w
+
+Fitting BERTopic...
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+WARNING:huggingface_hub.utils._http:Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+BertModel LOAD REPORT from: sentence-transformers/all-MiniLM-L6-v2
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+2026-05-24 08:16:07,469 - BERTopic - Embedding - Transforming documents to embeddings.
+2026-05-24 08:16:34,987 - BERTopic - Embedding - Completed ✓
+2026-05-24 08:16:34,988 - BERTopic - Dimensionality - Fitting the dimensionality reduction algorithm
+2026-05-24 08:17:35,942 - BERTopic - Dimensionality - Completed ✓
+2026-05-24 08:17:35,945 - BERTopic - Cluster - Start clustering the reduced embeddings
+2026-05-24 08:21:19,145 - BERTopic - Cluster - Completed ✓
+2026-05-24 08:21:19,156 - BERTopic - Representation - Fine-tuning topics using representation models.
+2026-05-24 08:21:20,596 - BERTopic - Representation - Completed ✓
+
+Discovered 419 topics (topic -1 = noise/outliers)
+
+Top topics:
+  Topic  Count                                                                                                                            Name                                                                                                                                                                                                                                                                                                                                  Representation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+--------------------------------------------------
+--- Cell 33 (Code) ---
+Source:
+metrics_report = evaluation_stage(
+    anomalies_path = ANOMALIES_PARQUET,
+    figures_dir    = FIGURES_DIR,
+    metrics_path   = METRICS_JSON,
+)
+
+
+Output snippet:
+Loading full labeled parquet (all events) …
+    Shape: (196081, 40)
+    Total positives (full corpus): 1,942 / 196,081
+
+Loading anomaly scores from anomalies.parquet …
+    Anomaly set shape: (19540, 50)
+    Positives in anomaly set: 171 / 19,540
+
+── Evaluation Metrics (full 196K corpus) ──────────────────
+/tmp/ipykernel_2228/703576754.py:80: RuntimeWarning:
+
+invalid value encountered in divide
+
+/tmp/ipykernel_2228/703576754.py:80: RuntimeWarning:
+
+invalid value encountered in divide
+
+/tmp/ipykernel_2228/703576754.py:80: RuntimeWarning:
+
+invalid value encountered in divide
+
+
+  Isolation Forest
+    ROC-AUC   : 0.4994
+    PR-AUC    : 0.0098
+    F1 (opt)  : 0.0229
+    Precision : 0.0122
+    Recall    : 0.1833
+    FPR (opt) : 0.1483
+
+  One-Class SVM
+    ROC-AUC   : 0.5077
+    PR-AUC    : 0.0111
+    F1 (opt)  : 0.0423
+    Precision : 0.0252
+    Recall    : 0.1313
+    FPR (opt) : 0.0508
+
+  Deep Autoencoder
+    ROC-AUC   : 0.4984
+    PR-AUC    : 0.0099
+    F1 (opt)  : 0.0211
+    Precision : 0.0112
+    Recall    : 0.1895
+    FPR (opt) : 0.1679
+────────────────────────────────────────────────────────────
+
+── Generating figures ─────────────────────────────────────
+  Saved → /content/data/figures/roc_curve_comparison.png
+  Saved → /content/data/figures/pr_curve_comparison.png
+  Saved → /content/data/figures/confusion_matrices.png
+
+  Metrics saved → /content/data/metrics_report.json
+
+--------------------------------------------------
+--- Cell 34 (Code) ---
+Source:
+# Display metrics comparison table
+import json, pandas as pd
+from IPython.display import display, Image
+
+with open(METRICS_JSON) as f:
+    report = json.load(f)
+
+metrics_df = pd.DataFrame(report).T
+metrics_df.index.name = "Model"
+print("\n── Evaluation Metrics Summary ──────────────────────────")
+
+
+Output snippet:
+
+── Evaluation Metrics Summary ──────────────────────────
+
+── ROC Curves ──
+
+── Precision-Recall Curves ──
+
+── Confusion Matrices ──
+
+--------------------------------------------------
+--- Cell 37 (Code) ---
+Source:
+# ── Mistral API key setup (Stage 6) ─────────────────────────────────────────
+# The key is stored as a Colab secret named MISTRAL_API_KEY.
+# To add it: click the 🔑 (Secrets) icon in the left sidebar → New secret.
+import os
+try:
+    from google.colab import userdata
+    MISTRAL_API_KEY = userdata.get("MISTRAL_API_KEY")
+except Exception:
+    # Fallback: read from environment if already set (e.g. local run)
+    MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
+
+
+Output snippet:
+Mistral API key loaded ✔
+
+--------------------------------------------------
+--- Cell 38 (Code) ---
+Source:
+llm_metrics = llm_eval_stage(
+    results_path = RESULTS_JSON,
+    metrics_path = LLM_METRICS_JSON,
+    figures_dir  = FIGURES_DIR,
+    model        = MISTRAL_MODEL,        # mistral-large-latest via Mistral API
+    api_key      = MISTRAL_API_KEY,
+    max_samples  = 10,   # 10 samples ≈ 80 API calls; ~5–15 min via Mistral API
+                         # increase to 30 for the final thesis run
+)
+
+
+Output snippet:
+Loading LLM results from /content/data/llm_results.json …
+  Evaluating 10 entries …
+BertModel LOAD REPORT from: sentence-transformers/all-MiniLM-L6-v2
+Key                     | Status     |  | 
+------------------------+------------+--+-
+embeddings.position_ids | UNEXPECTED |  | 
+
+Notes:
+- UNEXPECTED	:can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+  RAGAS LLM judge → Mistral API (mistral-large-latest) via llm_factory
+  RAGAS Embeddings → HuggingFaceEmbeddings (all-MiniLM-L6-v2, local)
+
+── Evaluating WITH RAG context ────────────────────────────
+  [WITH RAG]  sample context prefix: '[MSRC_CVRF]\nMSRC Update: 2024-Jul | Title: July 2024 Security Updates | Release '
+/tmp/ipykernel_2228/3779978384.py:205: DeprecationWarning:
+
+Importing Faithfulness from 'ragas.metrics' is deprecated and will be removed in v1.0. Please use 'ragas.metrics.collections' instead. Example: from ragas.metrics.collections import Faithfulness
+
+/tmp/ipykernel_2228/3779978384.py:205: DeprecationWarning:
+
+Importing AnswerRelevancy from 'ragas.metrics' is deprecated and will be removed in v1.0. Please use 'ragas.metrics.collections' instead. Example: from ragas.metrics.collections import AnswerRelevancy
+
+/tmp/ipykernel_2228/3779978384.py:205: DeprecationWarning:
+
+Importing ContextPrecision from 'ragas.metrics' is deprecated and will be removed in v1.0. Please use 'ragas.metrics.collections' instead. Example: from ragas.metrics.collections import ContextPrecision
+
+/tmp/ipykernel_2228/3779978384.py:205: DeprecationWarning:
+
+Importing ContextRecall from 'ragas.metrics' is deprecated and will be removed in v1.0. Please use 'ragas.metrics.collections' instead. Example: from ragas.metrics.collections import ContextRecall
+
+WARNING:ragas.prompt.pydantic_prompt:LLM returned 1 generations instead of requested 3. Proceeding with 1 generations.
+ERROR:ragas.executor:Exception raised in Job[1]: AttributeError('HuggingFaceEmbeddings' object has no attribute 'embed_query')
+WARNING:ragas.prompt.pydantic_prompt:LLM returned 1 generations instead of requested 3. Proceeding with 1 generations.
+ERROR:ragas.executor:Exception raised in Job[5]: AttributeError('HuggingFaceEmbeddings' object has no attribute 'embed_query')
+WARNING:ragas.prompt.pydantic_prompt:LLM returned 1 generations instead of requested 3. Proceeding with 1 generations.
+ERROR:ragas.executor:Exception raised in Job[9]: AttributeError('HuggingFaceEmbeddings' object has no attribute 'embed_query')
+WARNING:ragas.prompt.pydantic_prompt:LLM returned 1 generations instead of requested 3. Proceeding with 1 generations.
+ERROR:ragas.executor:Exception raised in Job[13]: AttributeError('HuggingFaceEmbeddings' object has no attribute 'embed_query')
+WARNING:ragas.prompt.pydantic_prompt:LLM returned 1 generations instead of requested 3. Proceeding with 1 generations.
+ERROR:ragas.executor:Exception raised in Job[17]: AttributeError('HuggingFaceEmbeddings' object has no attribute 'embed_query')
+WARNI
+--------------------------------------------------
+--- Cell 39 (Code) ---
+Source:
+import json
+from IPython.display import display, Image
+
+with open(LLM_METRICS_JSON) as f:
+    llm_m = json.load(f)
+
+print("── RAGAS Results ───────────────────────────────────────")
+for condition in ["with_rag", "without_rag", "delta"]:
+    print(f"\n  [{condition.upper()}]")
+    for k, v in llm_m[condition].items():
+
+
+Output snippet:
+── RAGAS Results ───────────────────────────────────────
+
+  [WITH_RAG]
+    faithfulness             : 0.4407
+    answer_relevancy         : 0.0000
+    context_precision        : 0.2000
+    context_recall           : 0.6000
+
+  [WITHOUT_RAG]
+    faithfulness             : 0.0000
+    answer_relevancy         : 0.0000
+    context_precision        : 0.0000
+    context_recall           : 0.0000
+
+  [DELTA]
+    faithfulness             : 0.4407
+    answer_relevancy         : 0.0000
+    context_precision        : 0.2000
+    context_recall           : 0.6000
+────────────────────────────────────────────────────────
+
+--------------------------------------------------

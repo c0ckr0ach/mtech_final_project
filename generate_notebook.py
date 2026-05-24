@@ -438,23 +438,39 @@ Two conditions are compared:
 cells.append(code(read_pipeline_module("stage6_llm_eval.py")))
 
 cells.append(code("""\
-# ── Mistral API key setup (Stage 6) ─────────────────────────────────────────
-# The key is stored as a Colab secret named MISTRAL_API_KEY.
-# To add it: click the 🔑 (Secrets) icon in the left sidebar → New secret.
+# ── API Key setup (Stage 6) ──────────────────────────────────────────────────
+# RAGAS evaluation supports both Groq API (super fast, high rate limits) and Mistral API.
+# Add your key as a Colab secret (🔑 icon on the left sidebar) named GROQ_API_KEY or MISTRAL_API_KEY.
 import os
+groq_key = ""
+mistral_key = ""
+
 try:
     from google.colab import userdata
-    MISTRAL_API_KEY = userdata.get("MISTRAL_API_KEY")
+    groq_key = userdata.get("GROQ_API_KEY")
 except Exception:
-    # Fallback: read from environment if already set (e.g. local run)
-    MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "")
-if not MISTRAL_API_KEY:
+    groq_key = os.environ.get("GROQ_API_KEY", "")
+
+try:
+    from google.colab import userdata
+    mistral_key = userdata.get("MISTRAL_API_KEY")
+except Exception:
+    mistral_key = os.environ.get("MISTRAL_API_KEY", "")
+
+if groq_key:
+    os.environ["GROQ_API_KEY"] = groq_key
+    MISTRAL_API_KEY = ""
+    print("Groq API key loaded successfully ✔ (High-speed RAGAS enabled)")
+elif mistral_key:
+    os.environ["MISTRAL_API_KEY"] = mistral_key
+    MISTRAL_API_KEY = mistral_key
+    print("Mistral API key loaded successfully ✔")
+else:
     raise ValueError(
-        "MISTRAL_API_KEY is not set. "
-        "Add it as a Colab secret named MISTRAL_API_KEY (the 🔑 icon in the sidebar)."
+        "Neither GROQ_API_KEY nor MISTRAL_API_KEY is set. "
+        "Please add one of them as a Colab secret (🔑 icon in the left sidebar) "
+        "named exactly GROQ_API_KEY or MISTRAL_API_KEY."
     )
-os.environ["MISTRAL_API_KEY"] = MISTRAL_API_KEY
-print("Mistral API key loaded ✔")
 """))
 
 cells.append(code("""\
