@@ -347,7 +347,7 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
                    figures_dir: str    = FIGURES_DIR,
                    model: str          = MISTRAL_MODEL,
                    api_key: str        = None,
-                   max_samples: int    = 10) -> dict:  # 10 = ~80 API calls; ~5–15 min via Mistral API
+                   max_samples: int    = 30) -> dict:  # 30 = ~240 API calls; ~15–45 min via Mistral API
     """
     End-to-end Stage 6 entry point.
     Evaluates LLM analysis quality with and without RAG context using RAGAS.

@@ -480,8 +480,8 @@ llm_metrics = llm_eval_stage(
     figures_dir  = FIGURES_DIR,
     model        = MISTRAL_MODEL,        # mistral-large-latest via Mistral API
     api_key      = MISTRAL_API_KEY,
-    max_samples  = 10,   # 10 samples ≈ 80 API calls; ~5–15 min via Mistral API
-                         # increase to 30 for the final thesis run
+    max_samples  = 30,   # 30 samples ≈ 240 API calls; ~15–45 min via Mistral API
+                         # increased to 30 for the final thesis run
 )
 """))
 
