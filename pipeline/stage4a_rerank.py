@@ -45,7 +45,7 @@ def _get_cross_encoder():
 
 def rerank_passages(query: str,
                     passages: list[str],
-                    top_k: int = 8) -> list[str]:
+                    top_k: int | None = None) -> list[str]:
     """
     Re-rank a list of text passages by relevance to `query` using a cross-encoder.
 
@@ -53,31 +53,39 @@ def rerank_passages(query: str,
         query:    The retrieval query string (anomaly context + topic keywords).
         passages: List of raw text passages from ChromaDB (one per retrieved doc).
         top_k:    Number of passages to return after re-ranking.
+                  Pass None or len(passages) to reorder ALL passages without truncating.
+                  This is the preferred mode for RAGAS evaluation, as context recall
+                  benefits from maximum coverage while the LLM still sees the best
+                  passages first (position bias in attention).
 
     Returns:
-        List of up to `top_k` passages, ordered by descending relevance score.
-        If the cross-encoder is unavailable, returns the first `top_k` passages
-        in the original order (graceful degradation).
+        List of passages ordered by descending relevance score.
+        If top_k is None, all passages are returned (just reordered).
+        If the cross-encoder is unavailable, returns passages in original order.
     """
     if not passages:
         return passages
 
     ce = _get_cross_encoder()
 
+    # Resolve top_k: None or values >= len(passages) mean "keep all"
+    keep = len(passages) if (top_k is None or top_k >= len(passages)) else top_k
+
     if ce is None:
-        # Graceful fallback: no re-ranking
-        return passages[:top_k]
+        # Graceful fallback: no re-ranking, return in original order
+        return passages[:keep]
 
     try:
         # Cross-encoder scores (query, passage) pairs jointly
         pairs  = [(query, p) for p in passages]
         scores = ce.predict(pairs)  # numpy array of floats
 
-        # Sort by descending score, return top_k
+        # Sort by descending score
         ranked = sorted(zip(scores, passages), key=lambda x: x[0], reverse=True)
-        return [p for _, p in ranked[:top_k]]
+        return [p for _, p in ranked[:keep]]
 
     except Exception as exc:
         logger.warning("[Rerank] Cross-encoder prediction failed (%s). "
                        "Using original order.", exc)
-        return passages[:top_k]
+        return passages[:keep]
+

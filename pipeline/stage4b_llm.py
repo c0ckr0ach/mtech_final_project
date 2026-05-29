@@ -24,7 +24,11 @@ OLLAMA_MODEL    = "llama3.1:8b"  # 128K context, better instruction-following th
 OLLAMA_BASE_URL = "http://localhost:11434"
 TOP_N_TOPICS    = 12                 # topics to analyse
 EVENTS_PER_TOPIC = 3                 # worst-scoring events per topic
-RAG_TOP_K       = 8                  # up from 5; combined with re-ranking in stage4a
+RAG_TOP_K       = 5                  # per collection: 5 × 6 collections = 30 passages total
+                                     # kept at 5 to match the baseline that achieved recall=0.60;
+                                     # re-ranking now reorders all 30 (no truncation) rather than
+                                     # collapsing to a global top-8 which killed recall to 0.32
+
 # ──────────────────────────────────────────────────────────────────────────────
 
 

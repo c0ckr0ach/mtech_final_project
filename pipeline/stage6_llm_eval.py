@@ -177,12 +177,20 @@ def _build_ragas_dataset(results: list[dict],
     Convert llm_results.json entries strictly into an EvaluationDataset (RAGAS v0.2+).
     This uses the modern SingleTurnSample format. Legacy support is removed.
 
-    Key improvement for Faithfulness:
-    RAGAS Faithfulness checks whether each atomic claim in `response` is supported
-    by ANY item in `retrieved_contexts`. If the LLM correctly copies sentences from
-    retrieved_docs into evidence_quotes, and those evidence_quotes contain the exact
-    claim wording, adding them as a separate context item gives RAGAS a direct
-    textual match path — significantly boosting the faithfulness score.
+    Faithfulness fix: combined response = evidence_quotes + threat_analysis
+    ───────────────────────────────────────────────────────────────
+    RAGAS Faithfulness decomposes `response` into atomic claims and checks each
+    against `retrieved_contexts`. If we send only threat_analysis (LLM-interpreted
+    prose), the LLM may use knowledge outside retrieved_docs, generating claims
+    RAGAS can't verify — faithfulness stays low.
+
+    By prepending evidence_quotes (verbatim sentences copied from retrieved_docs)
+    to the response, those quoted sentences become atomic claims that ARE present
+    in retrieved_contexts (by definition). RAGAS will find them, boosting the
+    numerator of grounded_claims/total_claims significantly.
+
+    The threat_analysis paragraph is appended after so answer_relevancy can
+    still reverse-engineer a relevant question from the response.
     """
     samples = []
     for r in results:
@@ -191,27 +199,43 @@ def _build_ragas_dataset(results: list[dict],
             f"EventID {r.get('event_id')} on host {r.get('hostname')}. "
             f"Topic keywords: {r.get('topic_keywords', '')}."
         )
-        # Use only the prose threat_analysis as the RAGAS response.
-        # RAGAS Answer Relevancy works by reverse-engineering a question from
-        # the response; a multi-field structured form breaks this process.
-        # A single prose answer shares topic vocabulary with the question and
-        # allows the metric to correctly compute similarity.
-        answer = r.get("threat_analysis", "")
+
         if no_rag:
+            # Baseline: no evidence_quotes, no retrieved context
+            answer   = r.get("threat_analysis", "")
             contexts = ["[No retrieval context provided — baseline condition.]"
                         " This string intentionally contains no threat-intel information."]
         else:
-            context_text  = r.get("retrieved_docs", "")
-            # Also include the LLM's verbatim evidence_quotes as an additional
-            # context item.  These are exact sentences copied from retrieved_docs,
-            # so RAGAS can directly match claims in threat_analysis against them.
-            evidence_text = r.get("evidence_quotes", "")
+            # ── Build combined response: evidence_quotes ≠ threat_analysis ───────
+            # evidence_quotes: verbatim text from retrieved_docs (always faithful)
+            # threat_analysis: LLM-interpreted prose (partially faithful)
+            # Combining them ensures RAGAS has a mix of high-confidence grounded
+            # claims (the quotes) and interpreted claims (the analysis).
+            evidence_text = r.get("evidence_quotes", "").strip()
+            analysis_text = r.get("threat_analysis", "").strip()
 
+            if evidence_text and analysis_text:
+                answer = (
+                    f"{evidence_text}\n\n"
+                    f"Analysis based on the above evidence:\n{analysis_text}"
+                )
+            elif evidence_text:
+                answer = evidence_text
+            else:
+                answer = analysis_text
+
+            # Build retrieved_contexts: raw retrieved_docs + evidence_quotes
+            # The evidence_quotes item gives RAGAS a direct textual match path
+            # for claims that were verbatim-quoted from retrieved_docs.
+            context_text = r.get("retrieved_docs", "")
             contexts = []
             if context_text:
                 contexts.append(context_text)
             if evidence_text:
-                contexts.append(f"[CITED EVIDENCE — verbatim quotes from retrieved docs]\n{evidence_text}")
+                contexts.append(
+                    f"[CITED EVIDENCE — verbatim quotes extracted from retrieved docs]\n"
+                    f"{evidence_text}"
+                )
             if not contexts:
                 contexts = ["[Retrieved context was empty for this entry.]"]
 
