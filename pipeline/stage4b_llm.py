@@ -19,11 +19,12 @@ except ImportError:
 # ── Config ────────────────────────────────────────────────────────────────────
 TOPICS_PARQUET  = "/content/data/anomalies_with_topics.parquet"
 RESULTS_JSON    = "/content/data/llm_results.json"
-OLLAMA_MODEL    = "llama3"               # local Ollama model used for threat analysis
+OLLAMA_MODEL    = "llama3.1:8b"  # 128K context, better instruction-following than llama3
+                                 # 4-bit quantised ≈ 4.7 GB — fits Colab 16 GB RAM comfortably
 OLLAMA_BASE_URL = "http://localhost:11434"
 TOP_N_TOPICS    = 12                 # topics to analyse
 EVENTS_PER_TOPIC = 3                 # worst-scoring events per topic
-RAG_TOP_K       = 5
+RAG_TOP_K       = 8                  # up from 5; combined with re-ranking in stage4a
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -35,8 +36,8 @@ def configure_dspy(model: str = OLLAMA_MODEL):
         model=f"ollama_chat/{model}",
         api_base=OLLAMA_BASE_URL,
         api_key="ollama",
-        temperature=0.15,
-        max_tokens=1024,
+        temperature=0.0,    # deterministic output — reduces creative hallucination
+        max_tokens=2048,    # increased from 1024 so evidence_quotes are never truncated
     )
     dspy.configure(lm=lm)
     print(f"  DSPy configured -> ollama/{model}")
@@ -47,11 +48,25 @@ def configure_dspy(model: str = OLLAMA_MODEL):
 
 class ThreatAnalysis(dspy.Signature):
     """
-    You are a senior threat-intelligence analyst.
-    You MUST base every claim in your analysis ONLY on the passages provided
-    in retrieved_docs. Do NOT use knowledge outside those passages.
-    First, extract direct verbatim quotes from retrieved_docs that support
-    your findings. Then write your analysis grounded in those quotes.
+    STRICT GROUNDING RULE: You are a threat-intelligence analyst operating in
+    citation-only mode.
+
+    MANDATORY PROCESS — follow these steps IN ORDER:
+      Step 1 (evidence_quotes): Scan retrieved_docs and copy 2-4 exact verbatim
+              sentences into evidence_quotes. Do NOT paraphrase. Copy the exact
+              words character-for-character, including the source tag.
+      Step 2 (grounding_check): For each sentence you plan to write in
+              threat_analysis, write: 'Sentence N -> Quote N' mapping it to one
+              of the evidence_quotes from Step 1. If a sentence has no matching
+              quote, mark it 'UNSUPPORTED' and DROP it from threat_analysis.
+      Step 3 (threat_analysis): Write ONLY sentences that have a matching quote
+              in grounding_check. Every factual claim must appear word-for-word
+              in retrieved_docs. Do NOT add general cybersecurity background,
+              context, or explanations absent from retrieved_docs.
+
+    If retrieved_docs contain insufficient information for a claim, omit that
+    claim entirely. A shorter, fully-grounded analysis is better than a longer
+    hallucinated one.
     """
     anomaly_context: str  = dspy.InputField(
         desc="EventID, process image, hostname, account, granted access, "
@@ -67,17 +82,28 @@ class ThreatAnalysis(dspy.Signature):
 
     evidence_quotes: str  = dspy.OutputField(
         desc=(
-            "2–4 direct verbatim quotes copied word-for-word from retrieved_docs "
+            "2-4 direct verbatim quotes copied word-for-word from retrieved_docs "
             "that support the analysis. Format each on its own line as: "
             "'• [SOURCE_TAG] exact text copied from the document'. "
             "SOURCE_TAG is the bracketed label at the start of the passage "
-            "(e.g. MITRE_ATTACK, SIGMA, CISA_KEV). "
+            "(e.g. MITRE_ATTACK: T1003.001, SIGMA: win_lsass_access). "
             "Do NOT paraphrase. Copy the exact words."
+        )
+    )
+    grounding_check: str  = dspy.OutputField(
+        desc=(
+            "Self-verification step — for each sentence you will write in "
+            "threat_analysis, map it to an evidence_quote: "
+            "'Sentence 1 -> [quote it is based on]'. "
+            "If a planned sentence has no matching quote, write 'UNSUPPORTED' "
+            "and do NOT include that sentence in threat_analysis. "
+            "This field ensures every claim is traceable."
         )
     )
     threat_analysis: str  = dspy.OutputField(
         desc=(
-            "1–3 sentence analysis of the likely threat this anomaly represents. "
+            "1-3 sentence analysis of the likely threat this anomaly represents. "
+            "ONLY include sentences that are mapped to a quote in grounding_check. "
             "Every factual claim must be directly supported by one of the "
             "evidence_quotes above. Do not introduce any fact not present in "
             "retrieved_docs."
@@ -87,7 +113,7 @@ class ThreatAnalysis(dspy.Signature):
         desc="Most applicable MITRE ATT&CK technique, e.g. 'T1055 - Process Injection'."
     )
     remediation_steps: str  = dspy.OutputField(
-        desc="Numbered list of 3–5 concrete detection or remediation steps "
+        desc="Numbered list of 3-5 concrete detection or remediation steps "
              "derived from the retrieved_docs passages."
     )
     severity_rating: str    = dspy.OutputField(
@@ -206,11 +232,13 @@ FEW_SHOT_EXAMPLES = [
 def _bootstrap_metric(example, pred, trace=None):
     """Non-empty-output metric for BootstrapFewShot — must be a module-level
     function (not a lambda / closure) so DSPy can pickle it correctly.
-    Requires evidence_quotes to be non-empty: this is the key signal that
-    Llama 3 grounded its analysis in the retrieved docs rather than hallucinating.
+    Requires evidence_quotes AND grounding_check to be non-empty: this ensures
+    Llama 3.1 both cited passages (evidence_quotes) and verified each claim
+    maps to a quote (grounding_check), rather than hallucinating freely.
     """
     return (
         bool(getattr(pred, "evidence_quotes", "")) and   # citations are mandatory
+        bool(getattr(pred, "grounding_check", "")) and   # self-verification mandatory
         bool(getattr(pred, "threat_analysis", "")) and
         bool(getattr(pred, "mitre_technique", "")) and
         bool(getattr(pred, "remediation_steps", ""))
@@ -265,6 +293,31 @@ def build_anomaly_context(row: pd.Series) -> str:
     )
 
 
+# ── Local faithfulness proxy ──────────────────────────────────────────────────
+
+def _local_faithfulness_proxy(threat_analysis: str, retrieved_docs: str) -> float:
+    """
+    Quick string-overlap proxy for faithfulness.
+
+    Splits threat_analysis into sentences and checks each sentence's
+    non-trivial words (length > 5) against retrieved_docs. Returns
+    the fraction of sentences that have at least one matching key word.
+
+    Used as a fast pre-RAGAS gate: if the proxy score < 0.5, the analysis
+    loop retries the LLM call once with an even stronger grounding prefix.
+    This costs at most 1 extra LLM call per low-quality output.
+    """
+    sentences = [s.strip() for s in threat_analysis.split(".") if len(s.strip()) > 20]
+    if not sentences:
+        return 0.0
+    docs_lower = retrieved_docs.lower()
+    grounded = sum(
+        1 for s in sentences
+        if any(word in docs_lower for word in s.lower().split() if len(word) > 5)
+    )
+    return grounded / len(sentences)
+
+
 # ── Main analysis loop ────────────────────────────────────────────────────────
 
 def display_result(result: dict, idx: int):
@@ -300,6 +353,15 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
     """
     End-to-end Stage 4b entry point.
     Returns list of result dicts, also saved to JSON.
+
+    Faithfulness improvements applied:
+      - llama3.1:8b (better instruction-following, 128K context)
+      - temperature=0.0 (deterministic, less creative hallucination)
+      - max_tokens=2048 (evidence_quotes never truncated)
+      - RAG_TOP_K=8 with cross-encoder re-ranking (higher context precision)
+      - Hardened constraint-first system instruction
+      - grounding_check CoT field (LLM must map every claim to a quote)
+      - Local faithfulness proxy with one-shot retry on low-quality outputs
     """
     # ── Setup ─────────────────────────────────────────────────────────────────
     configure_dspy(OLLAMA_MODEL)
@@ -343,6 +405,27 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
                     topic_keywords=topic_kw,
                     retrieved_docs=docs,
                 )
+
+                # ── Local faithfulness guard ──────────────────────────────────
+                # If the quick string-overlap proxy score is below 0.5, the
+                # threat_analysis contains too many ungrounded claims. Retry
+                # once with an explicit reminder in the anomaly_context prefix.
+                proxy_score = _local_faithfulness_proxy(
+                    getattr(pred, "threat_analysis", ""), docs
+                )
+                if proxy_score < 0.5 and docs:
+                    print(f"  [Retry] Topic {topic_id}: faithfulness proxy={proxy_score:.2f} < 0.5 — retrying with stricter grounding.")
+                    grounding_reminder = (
+                        "[IMPORTANT: Your previous response contained ungrounded claims. "
+                        "This retry requires every sentence in threat_analysis to use "
+                        "only the EXACT words found in retrieved_docs.] "
+                    )
+                    pred = analyzer(
+                        anomaly_context=grounding_reminder + ctx,
+                        topic_keywords=topic_kw,
+                        retrieved_docs=docs,
+                    )
+
                 rec = {
                     "topic_id"         : int(topic_id),
                     "topic_keywords"   : topic_kw,
@@ -351,6 +434,7 @@ def llm_analysis_stage(topics_path: str    = TOPICS_PARQUET,
                     "anomaly_score"    : float(row.get("anomaly_score", 0)),
                     "retrieved_docs"   : docs,   # stored for Stage 6 RAG vs no-RAG eval
                     "evidence_quotes"  : getattr(pred, "evidence_quotes", ""),  # citation grounding
+                    "grounding_check"  : getattr(pred, "grounding_check", ""),  # CoT self-verification
                     "threat_analysis"  : pred.threat_analysis,
                     "mitre_technique"  : pred.mitre_technique,
                     "remediation_steps": pred.remediation_steps,

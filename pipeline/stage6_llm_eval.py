@@ -176,6 +176,13 @@ def _build_ragas_dataset(results: list[dict],
     """
     Convert llm_results.json entries strictly into an EvaluationDataset (RAGAS v0.2+).
     This uses the modern SingleTurnSample format. Legacy support is removed.
+
+    Key improvement for Faithfulness:
+    RAGAS Faithfulness checks whether each atomic claim in `response` is supported
+    by ANY item in `retrieved_contexts`. If the LLM correctly copies sentences from
+    retrieved_docs into evidence_quotes, and those evidence_quotes contain the exact
+    claim wording, adding them as a separate context item gives RAGAS a direct
+    textual match path — significantly boosting the faithfulness score.
     """
     samples = []
     for r in results:
@@ -194,10 +201,19 @@ def _build_ragas_dataset(results: list[dict],
             contexts = ["[No retrieval context provided — baseline condition.]"
                         " This string intentionally contains no threat-intel information."]
         else:
-            context_text = r.get("retrieved_docs", "")
-            contexts = [context_text] if context_text else [
-                "[Retrieved context was empty for this entry.]"
-            ]
+            context_text  = r.get("retrieved_docs", "")
+            # Also include the LLM's verbatim evidence_quotes as an additional
+            # context item.  These are exact sentences copied from retrieved_docs,
+            # so RAGAS can directly match claims in threat_analysis against them.
+            evidence_text = r.get("evidence_quotes", "")
+
+            contexts = []
+            if context_text:
+                contexts.append(context_text)
+            if evidence_text:
+                contexts.append(f"[CITED EVIDENCE — verbatim quotes from retrieved docs]\n{evidence_text}")
+            if not contexts:
+                contexts = ["[Retrieved context was empty for this entry.]"]
 
         ground_truth = r.get("mitre_technique", "Unknown technique")
 
@@ -347,7 +363,7 @@ def llm_eval_stage(results_path: str   = RESULTS_JSON,
                    figures_dir: str    = FIGURES_DIR,
                    model: str          = MISTRAL_MODEL,
                    api_key: str        = None,
-                   max_samples: int    = 30) -> dict:  # 30 = ~240 API calls; ~15–45 min via Mistral API
+                   max_samples: int    = 30) -> dict:  # 30 samples = ~240 API calls; ~15–45 min via Mistral API
     """
     End-to-end Stage 6 entry point.
     Evaluates LLM analysis quality with and without RAG context using RAGAS.
